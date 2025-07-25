@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ class ResBlock(nn.Module):
             num_ins, 
             num_outs, 
             stride=1,
-            act_fn=nn.SiLU,
+            act_fn=nn.ReLU,
             norm_layer=nn.BatchNorm1d
         ):
         super().__init__()
@@ -45,51 +46,44 @@ class ConvolutionModule(nn.Module):
     """
     def __init__(
         self,
-        input_dim: int,
-        num_channels: int,
+        input_size,
         depthwise_kernel_size: int,
+        dilation=1,
         dropout: float = 0.0,
-        bias: bool = False,
+        bias: bool = True,
         layer_norm: nn.Module = nn.LayerNorm,
         act_fn: nn.Module = nn.SiLU,
     ) -> None:
         super().__init__()
         if (depthwise_kernel_size - 1) % 2 != 0:
             raise ValueError("depthwise_kernel_size must be odd to achieve 'SAME' padding.")
-        self.layer_norm = layer_norm(input_dim)
-        self.sequential = torch.nn.Sequential(
-            nn.Conv1d(
-                input_dim,
-                2 * num_channels,
-                1,
-                stride=1,
-                padding=0,
-                bias=bias,
-            ),
+        self.padding = (depthwise_kernel_size - 1) * 2 ** (dilation - 1) // 2
+        self.layer_norm = layer_norm(input_size)
+        self.bottleneck = nn.Sequential(
+            # pointwise
+            nn.Conv1d(input_size, 2 * input_size, kernel_size=1, stride=1, bias=bias),
             nn.GLU(dim=1),
-            nn.Conv1d(
-                num_channels,
-                num_channels,
-                depthwise_kernel_size,
-                stride=1,
-                padding=(depthwise_kernel_size - 1) // 2,
-                groups=num_channels,
-                bias=bias,
-            ),
-            nn.BatchNorm1d(num_channels),
+        )
+        # depthwise
+        self.conv = nn.Conv1d(
+            input_size,
+            input_size,
+            kernel_size=depthwise_kernel_size,
+            stride=1,
+            padding=self.padding,
+            groups=input_size,
+            bias=bias,
+        )
+
+        self.after_conv = nn.Sequential(
+            nn.LayerNorm(input_size),
             act_fn(),
-            nn.Conv1d(
-                num_channels,
-                input_dim,
-                kernel_size=1,
-                stride=1,
-                padding=0,
-                bias=bias,
-            ),
+            # pointwise
+            nn.Linear(input_size, input_size, bias=bias),
             nn.Dropout(dropout),
         )
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             input (torch.Tensor): with shape `(B, T, D)`.
@@ -97,8 +91,12 @@ class ConvolutionModule(nn.Module):
         Returns:
             torch.Tensor: output, with shape `(B, T, D)`.
         """
-        x = self.layer_norm(input)
-        x = rearrange(x, 'b t d -> b d t')
-        x = self.sequential(x)
-        x = rearrange(x, 'b d t -> b t d')
-        return x
+        out = self.layer_norm(input)
+        out = rearrange(out, 'b t d -> b d t')
+        out = self.bottleneck(out)
+        out = self.conv(out)
+        out = rearrange(out, 'b d t -> b t d')
+        out = self.after_conv(out)
+        if mask is not None:
+            out = out.masked_fill(mask, 0.0)
+        return out

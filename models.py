@@ -17,9 +17,9 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer('img_size', 1600, 'input image size')
 flags.DEFINE_integer('patch_size', 80, 'patch size')
 flags.DEFINE_integer('in_chans', 8, 'number of input channels')
-flags.DEFINE_integer('embed_dim', 192, 'embedding dimension')
-flags.DEFINE_integer('num_heads', 12, 'number of attention heads')
-flags.DEFINE_integer('num_layers', 8, 'number of layers')
+flags.DEFINE_integer('embed_dim', 512, 'embedding dimension')
+flags.DEFINE_integer('num_heads', 8, 'number of attention heads')
+flags.DEFINE_integer('num_layers', 6, 'number of layers')
 flags.DEFINE_integer('downsample_factor', 8, 'downsample factor')
 flags.DEFINE_float('mlp_ratio', 4.0, 'MLP ratio')
 flags.DEFINE_integer('depthwise_conv_kernel_size', 31, 'depthwise convolution kernel size')
@@ -196,7 +196,7 @@ class Conformer(nn.Module):
         self.num_layers: int = FLAGS.num_layers
         self.depthwise_conv_kernel_size: int = FLAGS.depthwise_conv_kernel_size
         self.conv_drop: float = 0.2
-        self.attn_drop: float = 0.0
+        self.attn_drop: float = 0.2
         self.proj_drop: float = 0.2
         self.ffn_dropout: float = 0.2
         self.bias: bool = True
@@ -214,13 +214,13 @@ class Conformer(nn.Module):
         self.conv_linear = nn.Linear(self.embed_dim, self.embed_dim)
         self.conv_dropout = nn.Dropout(self.conv_drop)
 
-        self.conformer_layers = torch.nn.ModuleList(
+        self.layers = torch.nn.ModuleList(
             [
                 ConformerLayer(
-                    self.embed_dim,
-                    self.ffn_dim,
-                    self.num_heads,
-                    self.depthwise_conv_kernel_size,
+                    d_model=self.embed_dim,
+                    d_ffn=self.ffn_dim,
+                    n_head=self.num_heads,
+                    depthwise_conv_kernel_size=self.depthwise_conv_kernel_size,
                     conv_drop=self.conv_drop,
                     attn_drop=self.attn_drop,
                     proj_drop=self.proj_drop,
@@ -232,6 +232,7 @@ class Conformer(nn.Module):
                 for _ in range(self.num_layers)
             ]
         )
+        self.norm = self.layer_norm(self.embed_dim, eps=1e-6)
         self.w_out = nn.Linear(self.embed_dim, output_dim)
 
         self.waveform_augmentations = nn.Sequential(
@@ -261,7 +262,7 @@ class Conformer(nn.Module):
 
     def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x shape: [B, T, C]
-        encoder_padding_mask = self._lengths_to_padding_mask(lengths)
+        padding_mask = self._lengths_to_padding_mask(lengths)
 
         # Apply data augmentation when training
         if self.training:
@@ -275,16 +276,22 @@ class Conformer(nn.Module):
         # 2) Linear
         # 3) Dropout
         x = rearrange(x, 'b t c -> b c t')
-        x = self.conv_subsampling(x)  # [B, C, T/4]
+        x = self.conv_subsampling(x)
         x = rearrange(x, 'b c t -> b t c')
         x = self.conv_linear(x)
         x = self.conv_dropout(x)
 
-        for layer in self.conformer_layers:
-            x = layer(x, encoder_padding_mask)
-        
+        output = x
+        for layer in self.layers:
+            output, _ = layer(
+                output,
+                src_key_padding_mask=padding_mask,
+            )
+
+        output = self.norm(output)
+
         # Final output projection
-        logits = self.w_out(x)
+        logits = self.w_out(output)
 
         return logits, lengths
 
@@ -295,7 +302,7 @@ if __name__ == "__main__":
     #model = NewModel(num_outs=80, num_aux_outs=48)
     model = Conformer(output_dim = 38)
     model.eval()
-    lengths = torch.tensor([1600]) // FLAGS.downsample_factor
+    lengths = torch.tensor([FLAGS.img_size]) // FLAGS.downsample_factor
     print(model)
     summary(model, 
         input_data=(torch.randn(1, FLAGS.img_size, FLAGS.in_chans), lengths),
