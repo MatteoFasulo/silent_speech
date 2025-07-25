@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import numpy as np
 import random
 import scipy
@@ -19,8 +20,8 @@ from data_utils import load_audio, get_emg_features, FeatureNormalizer, phoneme_
 from absl import flags
 FLAGS = flags.FLAGS
 flags.DEFINE_list('remove_channels', [], 'channels to remove')
-flags.DEFINE_list('silent_data_directories', ['./emg_data/silent_parallel_data'], 'silent data locations')
-flags.DEFINE_list('voiced_data_directories', ['./emg_data/voiced_parallel_data','./emg_data/nonparallel_data'], 'voiced data locations')
+flags.DEFINE_list('silent_data_directories', ['/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/'], 'silent data locations')
+flags.DEFINE_list('voiced_data_directories', ['/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/','/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/'], 'voiced data locations')
 flags.DEFINE_string('testset_file', 'testset_largedev.json', 'file with testset indices')
 flags.DEFINE_string('text_align_directory', 'text_alignments', 'directory with alignment files')
 
@@ -77,7 +78,7 @@ def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_
 
     emg_features = get_emg_features(emg)
 
-    mfccs = load_audio(os.path.join(base_dir, f'{index}_audio_clean.flac'),
+    mfccs = load_audio(os.path.join(base_dir, f'{index}_audio_resampled.flac'),
             max_frames=min(emg_features.shape[0], 800 if limit_length else float('inf')))
 
     if emg_features.shape[0] > mfccs.shape[0]:
@@ -111,33 +112,43 @@ class EMGDirectory(object):
 
     def __repr__(self):
         return self.directory
-
 class SizeAwareSampler(torch.utils.data.Sampler):
     def __init__(self, emg_dataset, max_len):
-        self.dataset = emg_dataset
-        self.max_len = max_len
+        self.dataset   = emg_dataset
+        self.max_len   = max_len
+        self.batches   = self._create_batches()
+
+    def _create_batches(self):
+        idxs = list(range(len(self.dataset)))
+        random.shuffle(idxs)
+        batches, batch, batch_len = [], [], 0
+        for idx in idxs:
+            # load info.json exactly once per example
+            directory_info, file_idx = self.dataset.example_indices[idx]
+            info_path = os.path.join(directory_info.directory, f'{file_idx}_info.json')
+            info      = json.load(open(info_path))
+            if not any(l in string.ascii_letters for l in info['text']):
+                continue
+
+            length = sum(chunk_len for chunk_len, _, _ in info['chunks'])
+            if batch and batch_len + length > self.max_len:
+                batches.append(batch)
+                batch, batch_len = [], 0
+
+            batch.append(idx)
+            batch_len += length
+
+        if batch:
+            batches.append(batch)
+        return batches
 
     def __iter__(self):
-        indices = list(range(len(self.dataset)))
-        random.shuffle(indices)
-        batch = []
-        batch_length = 0
-        for idx in indices:
-            directory_info, file_idx = self.dataset.example_indices[idx]
-            with open(os.path.join(directory_info.directory, f'{file_idx}_info.json')) as f:
-                info = json.load(f)
-            if not np.any([l in string.ascii_letters for l in info['text']]):
-                continue
-            length = sum([emg_len for emg_len, _, _ in info['chunks']])
-            if length > self.max_len:
-                logging.warning(f'Warning: example {idx} cannot fit within desired batch length')
-            if length + batch_length > self.max_len:
-                yield batch
-                batch = []
-                batch_length = 0
-            batch.append(idx)
-            batch_length += length
-        # dropping last incomplete batch
+        random.shuffle(self.batches)
+        for batch in self.batches:
+            yield batch
+
+    def __len__(self):
+        return len(self.batches)
 
 class EMGDataset(torch.utils.data.Dataset):
     def __init__(self, base_dir=None, limit_length=False, dev=False, test=False, no_testset=False, no_normalizers=False):
@@ -148,6 +159,7 @@ class EMGDataset(torch.utils.data.Dataset):
             devset = []
             testset = []
         else:
+            print(f'Loading testset from {FLAGS.testset_file}')
             with open(FLAGS.testset_file) as f:
                 testset_json = json.load(f)
                 devset = testset_json['dev']
@@ -233,7 +245,7 @@ class EMGDataset(torch.utils.data.Dataset):
             emg = 8*np.tanh(emg/8.)
 
         session_ids = np.full(emg.shape[0], directory_info.session_index, dtype=np.int64)
-        audio_file = f'{directory_info.directory}/{idx}_audio_clean.flac'
+        audio_file = f'{directory_info.directory}/{idx}_audio_resampled.flac'
 
         text_int = np.array(self.text_transform.text_to_int(text), dtype=np.int64)
 
@@ -251,7 +263,7 @@ class EMGDataset(torch.utils.data.Dataset):
             result['parallel_voiced_audio_features'] = torch.from_numpy(voiced_mfccs).pin_memory()
             result['parallel_voiced_emg'] = torch.from_numpy(voiced_emg).pin_memory()
 
-            audio_file = f'{voiced_directory.directory}/{voiced_idx}_audio_clean.flac'
+            audio_file = f'{voiced_directory.directory}/{voiced_idx}_audio_resampled.flac'
 
         result['phonemes'] = torch.from_numpy(phonemes).pin_memory() # either from this example if vocalized or aligned example if silent
         result['audio_file'] = audio_file

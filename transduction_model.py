@@ -5,13 +5,16 @@ import logging
 import subprocess
 
 import soundfile as sf
-import tqdm
+from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
+from torchinfo import summary
 
-from read_emg import EMGDataset, SizeAwareSampler
-from architecture import Model
+#from read_emg import EMGDataset, SizeAwareSampler
+#from architecture import Model
+from hdf5_dataset import H5EmgDataset, SizeAwareSampler
+from models import NewModel
 from align import align_from_distances
 from asr_evaluation import evaluate
 from data_utils import phoneme_inventory, decollate_tensor, combine_fixed_length
@@ -30,21 +33,27 @@ flags.DEFINE_float('phoneme_loss_weight', 0.5, 'weight of auxiliary phoneme pred
 flags.DEFINE_float('l2', 1e-7, 'weight decay')
 flags.DEFINE_string('output_directory', 'output', 'output directory')
 
+def print_model_summary(model, input_size: tuple):
+    """
+    Print a summary of the model.
+    """
+    summary(model, input_size=input_size)
+
 def test(model, testset, device):
     model.eval()
 
-    dataloader = torch.utils.data.DataLoader(testset, batch_size=32, collate_fn=testset.collate_raw)
+    dataloader = torch.utils.data.DataLoader(testset, batch_size=FLAGS.batch_size, collate_fn=testset.collate_raw, pin_memory=(device=='cuda'))
     losses = []
     accuracies = []
     phoneme_confusion = np.zeros((len(phoneme_inventory),len(phoneme_inventory)))
-    seq_len = 200
     with torch.no_grad():
-        for batch in tqdm.tqdm(dataloader, 'Validation', disable=None):
-            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['emg']], seq_len)
-            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['raw_emg']], seq_len*8)
-            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['session_ids']], seq_len)
+        for batch in tqdm(dataloader, 'Validation', disable=None):
+            #X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['emg']], 200)
+            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['raw_emg']], 200*8)
+            #sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['session_ids']], 200)
 
-            pred, phoneme_pred = model(X, X_raw, sess)
+            pred, phoneme_pred = model(X_raw)
+            # torch.Size([93, 200, 80]) torch.Size([93, 200, 48])
 
             loss, phon_acc = dtw_loss(pred, phoneme_pred, batch, True, phoneme_confusion)
             losses.append(loss.item())
@@ -57,11 +66,11 @@ def test(model, testset, device):
 def save_output(model, datapoint, filename, device, audio_normalizer, vocoder):
     model.eval()
     with torch.no_grad():
-        sess = datapoint['session_ids'].to(device=device).unsqueeze(0)
-        X = datapoint['emg'].to(dtype=torch.float32, device=device).unsqueeze(0)
+        #sess = datapoint['session_ids'].to(device=device).unsqueeze(0)
+        #X = datapoint['emg'].to(dtype=torch.float32, device=device).unsqueeze(0)
         X_raw = datapoint['raw_emg'].to(dtype=torch.float32, device=device).unsqueeze(0)
 
-        pred, _ = model(X, X_raw, sess)
+        pred, _ = model(X_raw)
         y = pred.squeeze(0)
 
         y = audio_normalizer.inverse(y.cpu()).to(device)
@@ -76,12 +85,12 @@ def get_aligned_prediction(model, datapoint, device, audio_normalizer):
     model.eval()
     with torch.no_grad():
         silent = datapoint['silent']
-        sess = datapoint['session_ids'].to(device).unsqueeze(0)
-        X = datapoint['emg'].to(device).unsqueeze(0)
+        #sess = datapoint['session_ids'].to(device).unsqueeze(0)
+        #X = datapoint['emg'].to(device).unsqueeze(0)
         X_raw = datapoint['raw_emg'].to(device).unsqueeze(0)
         y = datapoint['parallel_voiced_audio_features' if silent else 'audio_features'].to(device).unsqueeze(0)
 
-        pred, _ = model(X, X_raw, sess) # (1, seq, dim)
+        pred, _ = model(X_raw) # (1, seq, dim)
 
         if silent:
             costs = torch.cdist(pred, y).squeeze(0)
@@ -163,14 +172,19 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         training_subset = trainset
     else:
         training_subset = trainset.subset(FLAGS.data_size_fraction)
-    dataloader = torch.utils.data.DataLoader(training_subset, pin_memory=(device=='cuda'), collate_fn=devset.collate_raw, num_workers=0, batch_sampler=SizeAwareSampler(training_subset, 256000))
+    dataloader = torch.utils.data.DataLoader(training_subset, pin_memory=(device=='cuda'), collate_fn=devset.collate_raw, num_workers=64, batch_sampler=SizeAwareSampler(training_subset, 256_000), persistent_workers=True)
 
-    n_phones = len(phoneme_inventory)
-    model = Model(devset.num_features, devset.num_speech_features, n_phones).to(device)
+    # 112 80 48 # num features | num speech features | num phonemes
+    print(len(phoneme_inventory))
+    model = NewModel(num_outs=devset.num_speech_features, num_aux_outs=len(phoneme_inventory)).to(device)
+
+    # Summary of the model
+    print_model_summary(model, input_size=(1, 1600, 8))
 
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(FLAGS.start_training_from)
         model.load_state_dict(state_dict, strict=False)
+        print(f'\nLoaded pretrained model weights from {FLAGS.start_training_from}\n')
 
     if save_sound_outputs:
         vocoder = Vocoder()
@@ -188,20 +202,21 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         if iteration <= FLAGS.learning_rate_warmup:
             set_lr(iteration*target_lr/FLAGS.learning_rate_warmup)
 
-    seq_len = 200
-
     batch_idx = 0
+    best_val_loss = float('inf')
     for epoch_idx in range(n_epochs):
         losses = []
-        for batch in tqdm.tqdm(dataloader, 'Train step', disable=None):
+        progress_bar = tqdm(dataloader, desc=f'Training (Epoch {epoch_idx+1})', disable=None)
+        for batch in progress_bar:
             optim.zero_grad()
             schedule_lr(batch_idx)
 
-            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['emg']], seq_len)
-            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['raw_emg']], seq_len*8)
-            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['session_ids']], seq_len)
+            #X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['emg']], 200)
+            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['raw_emg']], 200*8)
+            #sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch['session_ids']], 200)
 
-            pred, phoneme_pred = model(X, X_raw, sess)
+            #print(X.shape, X_raw.shape, sess.shape)
+            pred, phoneme_pred = model(X_raw)
 
             loss, _ = dtw_loss(pred, phoneme_pred, batch)
             losses.append(loss.item())
@@ -209,12 +224,21 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
             loss.backward()
             optim.step()
 
+            progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
+
             batch_idx += 1
+
         train_loss = np.mean(losses)
         val, phoneme_acc, _ = test(model, devset, device)
         lr_sched.step(val)
+
         logging.info(f'finished epoch {epoch_idx+1} - validation loss: {val:.4f} training loss: {train_loss:.4f} phoneme accuracy: {phoneme_acc*100:.2f}')
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory,'model.pt'))
+
+        if val < best_val_loss:
+            best_val_loss = val
+            torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, 'model.pt'))
+            logging.info(f'New best validation loss: {best_val_loss:.4f} - model saved')
+    
         if save_sound_outputs:
             save_output(model, devset[0], os.path.join(FLAGS.output_directory, f'epoch_{epoch_idx}_output.wav'), device, devset.mfcc_norm, vocoder)
 
@@ -233,13 +257,13 @@ def main():
             logging.StreamHandler()
             ], level=logging.INFO, format="%(message)s")
 
-    logging.info(subprocess.run(['git','rev-parse','HEAD'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
-    logging.info(subprocess.run(['git','diff'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
+    #logging.info(subprocess.run(['git','rev-parse','HEAD'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
+    #logging.info(subprocess.run(['git','diff'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
 
     logging.info(sys.argv)
 
-    trainset = EMGDataset(dev=False,test=False)
-    devset = EMGDataset(dev=True)
+    trainset = H5EmgDataset(dev=False,test=False)
+    devset = H5EmgDataset(dev=True)
     logging.info('output example: %s', devset.example_indices[0])
     logging.info('train / dev split: %d %d',len(trainset),len(devset))
 

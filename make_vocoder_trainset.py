@@ -7,7 +7,8 @@ import librosa
 
 import torch
 
-from architecture import Model
+#from architecture import Model
+from models import NewModel
 from transduction_model import get_aligned_prediction
 from read_emg import EMGDataset
 from data_utils import phoneme_inventory
@@ -23,7 +24,7 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     n_phones = len(phoneme_inventory)
-    model = Model(devset.num_features, devset.num_speech_features, n_phones, devset.num_sessions).to(device)
+    model = NewModel(devset.num_features, devset.num_speech_features, n_phones, devset.num_sessions).to(device)
     state_dict = torch.load(FLAGS.model)
     model.load_state_dict(state_dict)
 

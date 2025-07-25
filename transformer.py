@@ -77,6 +77,8 @@ class MultiHeadAttention(nn.Module):
     nn.init.xavier_normal_(self.w_v)
     nn.init.xavier_normal_(self.w_o)
 
+    self.batch_first = True
+
     self.dropout = nn.Dropout(dropout)
 
     if relative_positional:
