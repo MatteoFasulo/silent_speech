@@ -1,5 +1,7 @@
 import random
+from typing import Optional
 
+import torch
 from torch import nn
 import torch.nn.functional as F
 
@@ -7,8 +9,13 @@ from transformer import TransformerEncoderLayer
 
 from absl import flags
 FLAGS = flags.FLAGS
-flags.DEFINE_integer('model_size', 768, 'number of hidden dimensions')
+flags.DEFINE_integer('img_size', 1600, 'input image size')
+flags.DEFINE_integer('embed_dim', 768, 'number of hidden dimensions')
+flags.DEFINE_integer('in_chans', 8, 'number of input channels')
+flags.DEFINE_integer('num_heads', 8, 'number of attention heads')
 flags.DEFINE_integer('num_layers', 6, 'number of layers')
+flags.DEFINE_integer('downsample_factor', 8, 'downsample factor')
+flags.DEFINE_float('mlp_ratio', 4.0, 'MLP ratio')
 flags.DEFINE_float('dropout', .2, 'dropout')
 
 class ResBlock(nn.Module):
@@ -44,21 +51,28 @@ class Model(nn.Module):
         super().__init__()
 
         self.conv_blocks = nn.Sequential(
-            ResBlock(8, FLAGS.model_size, 2),
-            ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
-            ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
+            ResBlock(8, FLAGS.embed_dim, 2),
+            ResBlock(FLAGS.embed_dim, FLAGS.embed_dim, 2),
+            ResBlock(FLAGS.embed_dim, FLAGS.embed_dim, 2),
         )
-        self.w_raw_in = nn.Linear(FLAGS.model_size, FLAGS.model_size)
+        self.w_raw_in = nn.Linear(FLAGS.embed_dim, FLAGS.embed_dim)
 
-        encoder_layer = TransformerEncoderLayer(d_model=FLAGS.model_size, nhead=8, relative_positional=True, relative_positional_distance=100, dim_feedforward=3072, dropout=FLAGS.dropout)
+        encoder_layer = TransformerEncoderLayer(
+            d_model=FLAGS.embed_dim, 
+            nhead=FLAGS.num_heads,
+            relative_positional=True, 
+            relative_positional_distance=100, 
+            dim_feedforward=int(FLAGS.embed_dim * FLAGS.mlp_ratio),
+            dropout=FLAGS.dropout
+        )
         self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
-        self.w_out = nn.Linear(FLAGS.model_size, num_outs)
+        self.w_out = nn.Linear(FLAGS.embed_dim, num_outs)
 
         self.has_aux_out = num_aux_outs is not None
         if self.has_aux_out:
-            self.w_aux = nn.Linear(FLAGS.model_size, num_aux_outs)
+            self.w_aux = nn.Linear(FLAGS.embed_dim, num_aux_outs)
 
-    def forward(self, x_raw):
+    def forward(self, x_raw, lengths: Optional[torch.Tensor] = None):
         # x shape is (batch, time, electrode)
 
         if self.training:
@@ -81,5 +95,5 @@ class Model(nn.Module):
         if self.has_aux_out:
             return self.w_out(x), self.w_aux(x)
         else:
-            return self.w_out(x)
+            return self.w_out(x), lengths
 
