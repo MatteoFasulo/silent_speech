@@ -18,7 +18,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_list('silent_data_directories', ['/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/'], 'silent data locations')
 flags.DEFINE_list('voiced_data_directories', ['/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/','/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/'], 'voiced data locations')
 flags.DEFINE_string('testset_file', 'testset_largedev.json', 'file with testset indices')
-flags.DEFINE_string('h5_path', ' /capstor/scratch/cscs/mfasulo/datasets/Gaddy/h5/emg_dataset.h5', 'HDF5 file')
+flags.DEFINE_string('h5_path', '/capstor/scratch/cscs/mfasulo/datasets/Gaddy/h5/emg_dataset.h5', 'HDF5 file')
 
 class EMGDirectory(object):
     def __init__(self, session_index, directory, silent, exclude_from_testset=False):
