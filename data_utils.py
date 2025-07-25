@@ -1,6 +1,7 @@
 import string
 
 import numpy as np
+import math
 import librosa
 import soundfile as sf
 from textgrids import TextGrid
@@ -156,15 +157,37 @@ class FeatureNormalizer(object):
         return sample
 
 def combine_fixed_length(tensor_list, length):
-    total_length = sum(t.size(0) for t in tensor_list)
-    if total_length % length != 0:
-        pad_length = length - (total_length % length)
-        tensor_list = list(tensor_list) # copy
-        tensor_list.append(torch.zeros(pad_length,*tensor_list[0].size()[1:], dtype=tensor_list[0].dtype, device=tensor_list[0].device))
-        total_length += pad_length
-    tensor = torch.cat(tensor_list, 0)
-    n = total_length // length
-    return tensor.view(n, length, *tensor.size()[1:])
+    # count real frames
+    real_lengths = [t.size(0) for t in tensor_list]
+    total_real = sum(real_lengths)
+
+    # how many buckets we need
+    n_buckets = math.ceil(total_real / length)
+
+    # pad to a multiple of `length`
+    total_needed = n_buckets * length
+    pad_length  = total_needed - total_real
+    if pad_length > 0:
+        # create one zero‐tensor of shape (pad_length, …) matching your features
+        zero_pad = torch.zeros(
+            (pad_length, *tensor_list[0].shape[1:]),
+            dtype=tensor_list[0].dtype,
+            device=tensor_list[0].device
+        )
+        tensor_list = list(tensor_list) + [zero_pad]
+
+    # concatenate and reshape into (n_buckets, length, …)
+    flat = torch.cat(tensor_list, dim=0)
+    buckets = flat.view(n_buckets, length, *flat.shape[1:])
+
+    # build the per‐bucket real‐lengths list
+    lengths = [length] * n_buckets
+    if pad_length > 0:
+        lengths[-1] = length - pad_length
+    lengths = torch.tensor(lengths, dtype=torch.long, device=flat.device)
+
+    return buckets, lengths
+
 
 def decollate_tensor(tensor, lengths):
     b, s, d = tensor.size()
