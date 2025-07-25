@@ -1,29 +1,32 @@
 import os
 import logging
 
-import deepspeech
+import torch
+import torchaudio
+from speechbrain.inference.ASR import EncoderASR
 import jiwer
-import soundfile as sf
-import numpy as np
 from unidecode import unidecode
-import librosa
 import tqdm
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+asr = EncoderASR.from_hparams(
+    source="speechbrain/asr-wav2vec2-librispeech", run_opts={"device":device}
+)
+
 def evaluate(testset, audio_directory):
-    model = deepspeech.Model('deepspeech-0.7.0-models.pbmm')
-    model.enableExternalScorer('deepspeech-0.7.0-models.scorer')
     predictions = []
     targets = []
     for i, datapoint in enumerate(tqdm.tqdm(testset, 'Evaluate outputs', disable=None)):
-        audio, rate = sf.read(os.path.join(audio_directory,f'example_output_{i}.wav'))
+        audio, rate = torchaudio.load(os.path.join(audio_directory, f'example_output_{i}.wav'))
         if rate != 16000:
-            audio = librosa.resample(audio, orig_sr=rate, target_sr=16000)
-        assert model.sampleRate() == 16000, 'wrong sample rate'
-        audio_int16 = (audio*(2**15)).astype(np.int16)
-        text = model.stt(audio_int16)
-        predictions.append(text)
+            audio = torchaudio.functional.resample(audio, rate, 16000)
+        
+        text = asr.transcribe_batch(wavs=audio, wav_lens=torch.tensor([1.0]))
+        pred_text = text[0] if isinstance(text[0], str) else str(text[0])
+        predictions.append(pred_text)
         target_text = unidecode(datapoint['text'])
         targets.append(target_text)
+
     transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
     targets = transformation(targets)
     predictions = transformation(predictions)
