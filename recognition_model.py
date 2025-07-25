@@ -3,7 +3,6 @@ import sys
 from datetime import datetime
 import numpy as np
 import logging
-import subprocess
 import multiprocessing
 from pyctcdecode import build_ctcdecoder
 import jiwer
@@ -16,9 +15,8 @@ import torch.nn.functional as F
 from torchinfo import summary
 from torch.utils.tensorboard import SummaryWriter
 
-#from read_emg import EMGDataset, SizeAwareSampler
-#from architecture import Model
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
+#from architecture import Model
 from models import Conformer
 from data_utils import combine_fixed_length, decollate_tensor
 from get_vocab import UNIGRAMS
@@ -39,7 +37,6 @@ flags.DEFINE_string('evaluate_saved', None, 'run evaluation on given model file'
 flags.DEFINE_integer('num_workers', 64, 'number of workers for dataloaders')
 flags.DEFINE_integer('beam_width', 250, 'beam width for CTC decoder')
 
-writer = SummaryWriter()
 run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 
 def get_ctc_decoder(vocab, kenlm_model_path='lm.binary', unigrams=UNIGRAMS, alpha=0.5, beta=1.5):
@@ -95,7 +92,6 @@ def test(model, dset, device):
         print(f"Prediction: {pred}")
         print("---")
 
-    model.train()
     return jiwer.wer(references, predictions)
 
 @torch.no_grad()
@@ -180,7 +176,7 @@ def train_model(model, trainset, devset, device):
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
-    optim = torch.optim.AdamW(model.parameters(), lr=FLAGS.learning_rate, weight_decay=FLAGS.l2, betas=(0.9, 0.98), eps=1e-9)
+    optim = torch.optim.AdamW(model.parameters(), lr=FLAGS.learning_rate, weight_decay=FLAGS.l2)
 
     # Calculate actual updates per epoch for logging
     batches_per_epoch = len(dataloader)
@@ -190,7 +186,7 @@ def train_model(model, trainset, devset, device):
     scheduler = CosineLRScheduler(
         optim,
         t_initial=total_updates,
-        lr_min=5e-6,
+        lr_min=7.5e-5,
         warmup_t=FLAGS.learning_rate_warmup,
         warmup_lr_init=1e-6,
         warmup_prefix=True,
@@ -280,7 +276,7 @@ def train_model(model, trainset, devset, device):
             # Save best model
             if val_wer < best_wer:
                 best_wer = val_wer
-                ckpt_name = f"model_{run_id}_epoch{epoch_idx+1:02d}.pt"
+                ckpt_name = f"model_{run_id}.pt"
                 torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, ckpt_name))
                 logging.info(f'New best WER: {best_wer*100:.2f} - model saved')
         else:
@@ -288,10 +284,14 @@ def train_model(model, trainset, devset, device):
                 f"Epoch {epoch_idx}\tLoss {train_loss:.4f}\tLR {current_lr:.2e}"
             )
 
-        # Save current model
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, 'new_model.pt'))
+    # Load back the best model
+    ckpt_name = f"model_{run_id}.pt"
+    best_model_path = os.path.join(FLAGS.output_directory, ckpt_name)
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path, map_location=torch.device(device)))
+        logging.info(f"Best model loaded from {best_model_path}")
         
-    return
+    return model
 
 def evaluate_saved():
     device = 'cuda' if torch.cuda.is_available() and not FLAGS.debug else 'cpu'
@@ -302,7 +302,7 @@ def evaluate_saved():
     summary(
         model, 
         input_data=[
-            torch.randn(1, FLAGS.img_size, 8).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
             torch.tensor([FLAGS.img_size], dtype=torch.long, device=device) // FLAGS.downsample_factor
         ],
     )
@@ -318,13 +318,11 @@ def main():
             logging.StreamHandler()
             ], level=logging.INFO, format="%(message)s")
 
-    #logging.info(subprocess.run(['git','rev-parse','HEAD'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
-    #logging.info(subprocess.run(['git','diff'], stdout=subprocess.PIPE, universal_newlines=True).stdout)
-
     logging.info(sys.argv)
 
     trainset = H5EmgDataset(dev=False,test=False)
     devset = H5EmgDataset(dev=True)
+    testset = H5EmgDataset(test=True)
     logging.info('output example: %s', devset.example_indices[0])
     logging.info('train / dev split: %d %d',len(trainset),len(devset))
 
@@ -335,16 +333,43 @@ def main():
     summary(
         model, 
         input_data=[
-            torch.randn(1, FLAGS.img_size, 8).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
             torch.tensor([FLAGS.img_size], dtype=torch.long, device=device) // FLAGS.downsample_factor
         ],
     )
-    train_model(model, trainset, devset, device)
 
-# python recognition_model.py --output_directory "./models/recognition_model/" --start_training_from ../EMG-MoE/export/emg_model.pth
+    best_ckpt_model = train_model(model, trainset, devset, device)
+
+    # Run test
+    test_wer = test(best_ckpt_model, testset, device)
+    logging.info('Test WER: %.2f%%', test_wer * 100)
+    writer.add_scalar('test/wer', test_wer, 0)
+    writer.add_hparams(
+        {
+            'window_size': FLAGS.img_size,
+            'learning_rate': FLAGS.learning_rate,
+            'l2': FLAGS.l2,
+            'num_epochs': FLAGS.num_epochs,
+            'gradient_accumulation_steps': FLAGS.gradient_accumulation_steps,
+            'embed_dim': FLAGS.embed_dim,
+            'num_heads': FLAGS.num_heads,
+            'num_layers': FLAGS.num_layers,
+            'downsample_factor': FLAGS.downsample_factor,
+            'mlp_ratio': FLAGS.mlp_ratio,
+            'beam_width': FLAGS.beam_width,
+        },
+        {
+            'dev_wer': compute_wer(best_ckpt_model, devset, device, stage='dev'),
+            'test_wer': test_wer,
+        },
+    )
+    return
+
 if __name__ == '__main__':
     FLAGS(sys.argv)
     if FLAGS.evaluate_saved is not None:
         evaluate_saved()
     else:
+        global writer
+        writer = SummaryWriter()
         main()
