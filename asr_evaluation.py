@@ -8,21 +8,27 @@ import jiwer
 from unidecode import unidecode
 import tqdm
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cuda'
 asr = EncoderASR.from_hparams(
-    source="speechbrain/asr-wav2vec2-librispeech", run_opts={"device":device}
+    source="speechbrain/asr-wav2vec2-librispeech", 
+    savedir="pretrained_models/asr-wav2vec2-librispeech", 
+    run_opts={"device":"cuda"}
 )
 
 def evaluate(testset, audio_directory):
     predictions = []
     targets = []
+
     for i, datapoint in enumerate(tqdm.tqdm(testset, 'Evaluate outputs', disable=None)):
         audio, rate = torchaudio.load(os.path.join(audio_directory, f'example_output_{i}.wav'))
+
         if rate != 16000:
             audio = torchaudio.functional.resample(audio, rate, 16000)
-        
-        text = asr.transcribe_batch(wavs=audio, wav_lens=torch.tensor([1.0]))
+
+        text = asr.transcribe_batch(wavs=audio, wav_lens=torch.tensor([1.0], device=device))
+
         pred_text = text[0] if isinstance(text[0], str) else str(text[0])
+
         predictions.append(pred_text)
         target_text = unidecode(datapoint['text'])
         targets.append(target_text)
@@ -30,6 +36,8 @@ def evaluate(testset, audio_directory):
     transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
     targets = transformation(targets)
     predictions = transformation(predictions)
-    logging.info(f'targets: {targets}')
-    logging.info(f'predictions: {predictions}')
+    for i in range(len(targets)):
+        logging.info(f'Target: {targets[i]}')
+        logging.info(f'Prediction: {predictions[i]}')
+        logging.info(f'---'*50)
     logging.info(f'wer: {jiwer.wer(targets, predictions)}')

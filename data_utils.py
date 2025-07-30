@@ -1,7 +1,6 @@
 import string
 
 import numpy as np
-import math
 import librosa
 import soundfile as sf
 from textgrids import TextGrid
@@ -157,37 +156,15 @@ class FeatureNormalizer(object):
         return sample
 
 def combine_fixed_length(tensor_list, length):
-    # count real frames
-    real_lengths = [t.size(0) for t in tensor_list]
-    total_real = sum(real_lengths)
-
-    # how many buckets we need
-    n_buckets = math.ceil(total_real / length)
-
-    # pad to a multiple of `length`
-    total_needed = n_buckets * length
-    pad_length  = total_needed - total_real
-    if pad_length > 0:
-        # create one zero‐tensor of shape (pad_length, …) matching your features
-        zero_pad = torch.zeros(
-            (pad_length, *tensor_list[0].shape[1:]),
-            dtype=tensor_list[0].dtype,
-            device=tensor_list[0].device
-        )
-        tensor_list = list(tensor_list) + [zero_pad]
-
-    # concatenate and reshape into (n_buckets, length, …)
-    flat = torch.cat(tensor_list, dim=0)
-    buckets = flat.view(n_buckets, length, *flat.shape[1:])
-
-    # build the per‐bucket real‐lengths list
-    lengths = [length] * n_buckets
-    if pad_length > 0:
-        lengths[-1] = length - pad_length
-    lengths = torch.tensor(lengths, dtype=torch.long, device=flat.device)
-
-    return buckets, lengths
-
+    total_length = sum(t.size(0) for t in tensor_list)
+    if total_length % length != 0:
+        pad_length = length - (total_length % length)
+        tensor_list = list(tensor_list) # copy
+        tensor_list.append(torch.zeros(pad_length,*tensor_list[0].size()[1:], dtype=tensor_list[0].dtype, device=tensor_list[0].device))
+        total_length += pad_length
+    tensor = torch.cat(tensor_list, 0)
+    n = total_length // length
+    return tensor.view(n, length, *tensor.size()[1:])
 
 def decollate_tensor(tensor, lengths):
     b, s, d = tensor.size()
@@ -263,19 +240,104 @@ def read_phonemes(textgrid_fname, max_len=None):
         assert phone_ids.shape[0] == max_len
     return phone_ids
 
+def numToWords(num,join=True):
+    '''words = {} convert an integer number into words'''
+    units = ['','one','two','three','four','five','six','seven','eight','nine']
+    teens = ['','eleven','twelve','thirteen','fourteen','fifteen','sixteen', \
+             'seventeen','eighteen','nineteen']
+    tens = ['','ten','twenty','thirty','forty','fifty','sixty','seventy', \
+            'eighty','ninety']
+    thousands = ['','thousand','million','billion','trillion','quadrillion', \
+                 'quintillion','sextillion','septillion','octillion', \
+                 'nonillion','decillion','undecillion','duodecillion', \
+                 'tredecillion','quattuordecillion','sexdecillion', \
+                 'septendecillion','octodecillion','novemdecillion', \
+                 'vigintillion']
+    words = []
+    if num==0: words.append('zero')
+    else:
+        numStr    = '%d'%int(num)
+        numStrLen = len(numStr)
+        groups = int((numStrLen+2)/3)
+        numStr = numStr.zfill(groups*3)
+        for i in range(0,groups*3,3):
+            h,t,u = int(numStr[i]),int(numStr[i+1]),int(numStr[i+2])
+            g = groups-int(i/3+1)
+            if h>=1:
+                words.append(units[h])
+                words.append('hundred')
+            if t>1:
+                words.append(tens[t])
+                if u>=1: words.append(units[u])
+            elif t==1:
+                if u>=1: words.append(teens[u])
+                else: words.append(tens[t])
+            else:
+                if u>=1: words.append(units[u])
+            if (g>=1) and ((h+t+u)>0): words.append(thousands[g]+' ')
+    if join: return ' '.join(words)
+    return words
+
+def convertNumbersToStrings(sentence):
+    
+    output_sentence = []
+    for word in sentence.split():
+        if word.isdigit():
+            output_sentence.append(numToWords(word))
+        else:
+            output_sentence.append(word)
+    output_sentence = ' '.join(output_sentence)
+
+    return output_sentence
+
+def applyCustomCorrections(sentence, replacement_dict):
+    '''
+    Correct specific strings in dataset. Inputs are:
+    
+        sentence (str) - string to clean
+        replacement_dict (dict) - dict containing key-value pairs
+                                  of strings to remove and replacements
+    '''
+    
+    output_sentence = []
+    for word in sentence.split():
+        if word in replacement_dict.keys():
+            output_sentence.append(replacement_dict[word])
+        else:
+            output_sentence.append(word)
+    output_sentence = ' '.join(output_sentence)
+
+    return output_sentence
+
 class TextTransform(object):
     def __init__(self):
         self.transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
-        self.chars = string.ascii_lowercase+string.digits+' '
+        self.replacement_dict = {
+            '£250' : 'two hundred fifty pounds',
+            '£1000' : 'one thousand pounds'
+        }
+        self.chars = [x for x in string.ascii_lowercase+string.digits+ '|']
 
     def clean_text(self, text):
+        text = applyCustomCorrections(text, self.replacement_dict)
         text = unidecode(text)
+        text = text.replace('-', ' ')
+        text = text.replace(':', ' ')
         text = self.transformation(text)
+        text = convertNumbersToStrings(text)
+
         return text
 
     def text_to_int(self, text):
         text = self.clean_text(text)
-        return [self.chars.index(c) for c in text]
+        text = text.replace(' ', '|')
+        return [self.chars.index(c.lower()) for c in text]
 
     def int_to_text(self, ints):
-        return ''.join(self.chars[i] for i in ints)
+        text = ''.join(self.chars[i] for i in ints)
+        text = text.replace('|', ' ').lower()
+        return text
+
+    def int_to_phone_str(self, ints):
+        text = ' '.join(self.chars[i] for i in ints)
+        return text
