@@ -29,13 +29,12 @@ def evaluate(testset, audio_directory):
 
         pred_text = text[0] if isinstance(text[0], str) else str(text[0])
 
+        pred_text = testset.text_transform.clean_text(pred_text)
+        target_text = testset.text_transform.clean_text(datapoint['text'])
+
         predictions.append(pred_text)
-        target_text = unidecode(datapoint['text'])
         targets.append(target_text)
 
-    transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
-    targets = transformation(targets)
-    predictions = transformation(predictions)
     for i in range(len(targets)):
         logging.info(f'Target: {targets[i]}')
         logging.info(f'Prediction: {predictions[i]}')
