@@ -9,9 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchinfo import summary
 from einops import rearrange
-from timm.layers import Mlp, SwiGLU
-
-from pos_embedding import RotaryPositionalEmbeddings
+from timm.layers import SwiGLU
 
 from absl import flags
 FLAGS = flags.FLAGS
