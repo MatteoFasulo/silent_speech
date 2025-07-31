@@ -55,13 +55,13 @@ class H5EmgDataset(Dataset):
         random.seed(0)
         self.no_normalizers = no_normalizers
 
-        # 1) load test/dev lists
+        # load test/dev lists
         with open(FLAGS.testset_file) as f:
             split = json.load(f)
         dev_set = {tuple(x) for x in split["dev"]}
         test_set = {tuple(x) for x in split["test"]}
 
-        # 2) build directories list
+        # build directories list
         dirs = []
         with h5py.File(FLAGS.h5_path, "r") as h5:
             # silent sessions
@@ -88,7 +88,7 @@ class H5EmgDataset(Dataset):
                             EMGDirectory(len(dirs), voiced_session_paths[sess], False, exclude_from_testset=has_silent)
                         )
 
-        # 3) replicate example_indices logic
+        # example_indices logic
         example_indices = []
         with h5py.File(FLAGS.h5_path, "r") as h5:
             for d in dirs:
