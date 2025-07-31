@@ -1,9 +1,11 @@
+import sys
 import random
 from typing import Optional
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torchinfo import summary
 
 from transformer import TransformerEncoderLayer
 
@@ -47,7 +49,7 @@ class ResBlock(nn.Module):
         return F.relu(x + res)
 
 class Model(nn.Module):
-    def __init__(self, num_outs, num_aux_outs=None):
+    def __init__(self, num_features, num_outs, num_aux_outs=None):
         super().__init__()
 
         self.conv_blocks = nn.Sequential(
@@ -63,7 +65,8 @@ class Model(nn.Module):
             relative_positional=True, 
             relative_positional_distance=100, 
             dim_feedforward=int(FLAGS.embed_dim * FLAGS.mlp_ratio),
-            dropout=FLAGS.dropout
+            dropout=FLAGS.dropout,
+            batch_first=False, # [T, B, C] input format to transformer
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
         self.w_out = nn.Linear(FLAGS.embed_dim, num_outs)
@@ -72,7 +75,7 @@ class Model(nn.Module):
         if self.has_aux_out:
             self.w_aux = nn.Linear(FLAGS.embed_dim, num_aux_outs)
 
-    def forward(self, x_raw, lengths: Optional[torch.Tensor] = None):
+    def forward(self, x_feat, x_raw, session_ids):
         # x shape is (batch, time, electrode)
 
         if self.training:
@@ -95,5 +98,15 @@ class Model(nn.Module):
         if self.has_aux_out:
             return self.w_out(x), self.w_aux(x)
         else:
-            return self.w_out(x), lengths
+            return self.w_out(x)
 
+if __name__ == "__main__":
+    FLAGS(sys.argv)
+    model = Model(num_outs=38)
+    model.eval()
+    x = torch.randn(1, FLAGS.img_size, FLAGS.in_chans)
+    lengths = torch.tensor([FLAGS.img_size]) // FLAGS.downsample_factor
+    print(model)
+    summary(model, 
+        input_data=(torch.randn(1, FLAGS.img_size, FLAGS.in_chans), lengths),
+    )
