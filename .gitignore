@@ -216,3 +216,5 @@ lm.binary
 normalizers.pkl
 runs/
 *.ipynb
+# Ignore pretrained models (Hugging Face ASR)
+pretrained_models/
