@@ -65,7 +65,7 @@ class ResBlock(nn.Module):
         num_ins,
         num_outs,
         stride=1,
-        act_fn: nn.Module = nn.GELU,
+        act_fn=F.relu,
     ):
         super().__init__()
 
@@ -80,7 +80,7 @@ class ResBlock(nn.Module):
         else:
             self.residual_path = None
 
-        self.act_fn = act_fn()
+        self.act_fn = act_fn
 
     def forward(self, x):
         input_value = x
