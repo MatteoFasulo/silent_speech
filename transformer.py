@@ -25,9 +25,10 @@ class TransformerEncoderLayer(nn.Module):
         >>> out = encoder_layer(src)
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_positional=True, relative_positional_distance=100):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_positional=True, relative_positional_distance=100, batch_first=False):
         super(TransformerEncoderLayer, self).__init__()
-        self.self_attn = MultiHeadAttention(d_model, nhead, dropout=dropout, relative_positional=relative_positional, relative_positional_distance=relative_positional_distance)
+        self.batch_first = batch_first
+        self.self_attn = MultiHeadAttention(d_model, nhead, dropout=dropout, relative_positional=relative_positional, relative_positional_distance=relative_positional_distance, batch_first=batch_first)
         # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -60,8 +61,9 @@ class TransformerEncoderLayer(nn.Module):
         return src
 
 class MultiHeadAttention(nn.Module):
-  def __init__(self, d_model=256, n_head=4, dropout=0.1, relative_positional=True, relative_positional_distance=100):
+  def __init__(self, d_model=256, n_head=4, dropout=0.1, relative_positional=True, relative_positional_distance=100, batch_first=False):
     super().__init__()
+    self.batch_first = batch_first
     self.d_model = d_model
     self.n_head = n_head
     d_qkv = d_model // n_head
@@ -76,8 +78,6 @@ class MultiHeadAttention(nn.Module):
     nn.init.xavier_normal_(self.w_k)
     nn.init.xavier_normal_(self.w_v)
     nn.init.xavier_normal_(self.w_o)
-
-    self.batch_first = True
 
     self.dropout = nn.Dropout(dropout)
 
