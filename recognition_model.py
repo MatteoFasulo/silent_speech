@@ -21,6 +21,7 @@ from absl import flags
 
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean("debug", False, "debug")
+flags.DEFINE_boolean("dev", False, "evaluate dev instead of test")
 flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
 flags.DEFINE_integer("batch_size", 32, "training batch size")
 flags.DEFINE_integer("num_epochs", 200, "number of epochs")
@@ -76,8 +77,7 @@ def test(model, dset, device):
 
             beam_results = decoder(pred.detach().cpu())
             pred_text = " ".join(beam_results[0][0].words).strip().lower()
-            b0 = example["text"][0]
-            target_text = dset.text_transform.clean_text(b0[0])
+            target_text = dset.text_transform.clean_text(example["text"][0])
 
             if len(target_text) > 0:
                 references.append(target_text)
@@ -185,12 +185,13 @@ def train_model(model, trainset, devset, device):
 
 def evaluate_saved():
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
-    testset = H5EmgDataset(test=True)
+    dev = FLAGS.dev
+    testset = H5EmgDataset(dev=dev, test=not dev)
     silent_flags = [d.silent for (d, _) in testset.example_indices]
     print(f"Unique silent flags in test set: {set(silent_flags)}")
     n_chars = len(testset.text_transform.chars)
     model = EMGTransformer(testset.num_features, n_chars + 1).to(device)
-    model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=torch.device(device)))
+    model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
     summary(
         model,
         input_data=[
