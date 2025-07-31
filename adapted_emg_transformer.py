@@ -12,19 +12,21 @@ from einops import rearrange
 from timm.layers import SwiGLU
 
 from absl import flags
+
 FLAGS = flags.FLAGS
-flags.DEFINE_integer('img_size', 1600, 'input image size')
-flags.DEFINE_integer('embed_dim', 192, 'number of hidden dimensions')
-flags.DEFINE_integer('in_chans', 8, 'number of input channels')
-flags.DEFINE_integer('num_heads', 12, 'number of attention heads')
-flags.DEFINE_integer('num_layers', 8, 'number of layers')
-flags.DEFINE_integer('downsample_factor', 8, 'downsample factor')
-flags.DEFINE_float('mlp_ratio', 4.0, 'MLP ratio')
-flags.DEFINE_float('dropout', .1, 'dropout')
+flags.DEFINE_integer("img_size", 1600, "input image size")
+flags.DEFINE_integer("embed_dim", 192, "number of hidden dimensions")
+flags.DEFINE_integer("in_chans", 8, "number of input channels")
+flags.DEFINE_integer("num_heads", 12, "number of attention heads")
+flags.DEFINE_integer("num_layers", 8, "number of layers")
+flags.DEFINE_integer("downsample_factor", 8, "downsample factor")
+flags.DEFINE_float("mlp_ratio", 4.0, "MLP ratio")
+flags.DEFINE_float("dropout", 0.1, "dropout")
+
 
 def load_pretrained_with_filtering(model, pretrained_path, key_prefix_to_match="blocks"):
-    ckpt = torch.load(pretrained_path, map_location='cpu')
-    pre_sd = ckpt.get('state_dict', ckpt)
+    ckpt = torch.load(pretrained_path, map_location="cpu")
+    pre_sd = ckpt.get("state_dict", ckpt)
     tgt_sd = model.state_dict()
 
     copied, dropped = [], []
@@ -34,7 +36,7 @@ def load_pretrained_with_filtering(model, pretrained_path, key_prefix_to_match="
         key = raw_key
         for pfx in ("module.", "model."):
             if key.startswith(pfx):
-                key = key[len(pfx):]
+                key = key[len(pfx) :]
 
         # remap ViT "blocks.{i}" to "transformer.layers.{i}"
         key = key.replace("blocks.", "transformer.layers.")
@@ -56,13 +58,15 @@ def load_pretrained_with_filtering(model, pretrained_path, key_prefix_to_match="
             print(f"– {k}")
     return tgt_sd
 
+
 class ResBlock(nn.Module):
     def __init__(
-            self, 
-            num_ins, 
-            num_outs, 
-            stride=1
-        ):
+        self,
+        num_ins,
+        num_outs,
+        stride=1,
+        act_fn: nn.Module = nn.GELU,
+    ):
         super().__init__()
 
         self.conv1 = nn.Conv1d(num_ins, num_outs, 3, padding=1, stride=stride)
@@ -76,10 +80,12 @@ class ResBlock(nn.Module):
         else:
             self.residual_path = None
 
+        self.act_fn = act_fn()
+
     def forward(self, x):
         input_value = x
 
-        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.act_fn(self.bn1(self.conv1(x)))
         x = self.bn2(self.conv2(x))
 
         if self.residual_path is not None:
@@ -87,7 +93,8 @@ class ResBlock(nn.Module):
         else:
             res = input_value
 
-        return F.relu(x + res)
+        return self.act_fn(x + res)
+
 
 class LearnedRelativePositionalEmbedding(nn.Module):
     # from https://github.com/pytorch/fairseq/pull/2225/commits/a7fb63f2b84d5b20c8855e9c3372a95e5d0ea073
@@ -107,13 +114,14 @@ class LearnedRelativePositionalEmbedding(nn.Module):
     """
 
     def __init__(
-            self,
-            max_relative_pos: int,
-            num_heads: int,
-            embedding_dim: int,
-            unmasked: bool = False,
-            heads_share_embeddings: bool = False,
-            add_to_values: bool = False):
+        self,
+        max_relative_pos: int,
+        num_heads: int,
+        embedding_dim: int,
+        unmasked: bool = False,
+        heads_share_embeddings: bool = False,
+        add_to_values: bool = False,
+    ):
         super().__init__()
         self.max_relative_pos = max_relative_pos
         self.num_heads = num_heads
@@ -121,11 +129,7 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         self.unmasked = unmasked
         self.heads_share_embeddings = heads_share_embeddings
         self.add_to_values = add_to_values
-        num_embeddings = (
-            2 * max_relative_pos - 1
-            if unmasked
-            else max_relative_pos
-        )
+        num_embeddings = 2 * max_relative_pos - 1 if unmasked else max_relative_pos
         embedding_size = (
             [num_embeddings, embedding_dim, 1]
             if heads_share_embeddings
@@ -133,7 +137,7 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         )
         if add_to_values:
             embedding_size[-1] = 2
-        initial_stddev = embedding_dim**(-0.5)
+        initial_stddev = embedding_dim ** (-0.5)
         self.embeddings = nn.Parameter(torch.zeros(*embedding_size))
         nn.init.normal_(self.embeddings, mean=0.0, std=initial_stddev)
 
@@ -157,7 +161,7 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         if saved_state is not None and "prev_key" in saved_state:
             assert not self.unmasked, "This should only be for decoder attention"
             length = saved_state["prev_key"].shape[-2] + 1  # `length - 1` keys are cached,
-                                                            # `+ 1` for the current time step
+            # `+ 1` for the current time step
             decoder_step = True
         else:
             length = query.shape[0]
@@ -165,11 +169,7 @@ class LearnedRelativePositionalEmbedding(nn.Module):
 
         used_embeddings = self.get_embeddings_for_query(length)
 
-        values_embeddings = (
-            used_embeddings[..., 1]
-            if self.add_to_values
-            else None
-        )
+        values_embeddings = used_embeddings[..., 1] if self.add_to_values else None
         positional_logits = self.calculate_positional_logits(query, used_embeddings[..., 0])
         positional_logits = self.relative_to_absolute_indexing(positional_logits, decoder_step)
         return (positional_logits, values_embeddings)
@@ -190,17 +190,11 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         start_pos = max(self.max_relative_pos - length, 0)
         if self.unmasked:
             with torch.no_grad():
-                padded_embeddings = nn.functional.pad(
-                    self.embeddings,
-                    (0, 0, 0, 0, pad_length, pad_length)
-                )
-            used_embeddings = padded_embeddings.narrow(-3, start_pos, 2*length - 1)
+                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, pad_length))
+            used_embeddings = padded_embeddings.narrow(-3, start_pos, 2 * length - 1)
         else:
             with torch.no_grad():
-                padded_embeddings = nn.functional.pad(
-                    self.embeddings,
-                    (0, 0, 0, 0, pad_length, 0)
-                )
+                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, 0))
             used_embeddings = padded_embeddings.narrow(-3, start_pos, length)
         return used_embeddings
 
@@ -234,9 +228,9 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         if length > self.max_relative_pos:
             # there is some padding
             pad_length = length - self.max_relative_pos
-            positional_logits[:,:,:pad_length] -= 1e8
+            positional_logits[:, :, :pad_length] -= 1e8
             if self.unmasked:
-                positional_logits[:,:,-pad_length:] -= 1e8
+                positional_logits[:, :, -pad_length:] -= 1e8
         return positional_logits
 
     def relative_to_absolute_indexing(self, x, decoder_step):
@@ -260,43 +254,35 @@ class LearnedRelativePositionalEmbedding(nn.Module):
             return x.contiguous().view(bsz_heads, 1, -1)
 
         if self.unmasked:
-            x = nn.functional.pad(
-                x,
-                (0, 1)
-            )
+            x = nn.functional.pad(x, (0, 1))
             x = x.transpose(0, 1)
             x = x.contiguous().view(bsz_heads, length * 2 * length)
-            x = nn.functional.pad(
-                x,
-                (0, length - 1)
-            )
+            x = nn.functional.pad(x, (0, length - 1))
             # Reshape and slice out the padded elements.
-            x = x.view(bsz_heads, length + 1, 2*length - 1)
-            return x[:, :length, length-1:]
+            x = x.view(bsz_heads, length + 1, 2 * length - 1)
+            return x[:, :length, length - 1 :]
         else:
-            x = nn.functional.pad(
-                x,
-                (1, 0)
-            )
+            x = nn.functional.pad(x, (1, 0))
             x = x.transpose(0, 1)
-            x = x.contiguous().view(bsz_heads, length+1, length)
+            x = x.contiguous().view(bsz_heads, length + 1, length)
             return x[:, 1:, :]
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(
-        self, 
-        d_model, 
+        self,
+        d_model,
         n_head,
-        dropout=0.1, 
-        relative_positional=True, 
-        relative_positional_distance=100, 
+        dropout=0.1,
+        relative_positional=True,
+        relative_positional_distance=100,
         batch_first=False,
         qkv_bias: bool = True,
         qk_norm: bool = True,
-        norm_layer: nn.Module = nn.RMSNorm
+        norm_layer: nn.Module = nn.RMSNorm,
     ):
         super().__init__()
-        assert d_model % n_head == 0, 'd_model should be divisible by n_head'
+        assert d_model % n_head == 0, "d_model should be divisible by n_head"
         self.num_heads = n_head
         self.head_dim = d_model // n_head
         self.batch_first = batch_first
@@ -309,13 +295,15 @@ class MultiHeadAttention(nn.Module):
         self.proj_drop = nn.Dropout(dropout)
 
         if relative_positional:
-            self.relative_positional = LearnedRelativePositionalEmbedding(relative_positional_distance, n_head, self.head_dim, True)
+            self.relative_positional = LearnedRelativePositionalEmbedding(
+                relative_positional_distance, n_head, self.head_dim, True
+            )
         else:
             self.relative_positional = None
 
     def forward(self, x: torch.Tensor, attn_mask=None) -> torch.Tensor:
         # X is (T, B, D)
-        x = rearrange(x, 'T B D -> B T D')
+        x = rearrange(x, "T B D -> B T D")
         B, N, D = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -327,10 +315,10 @@ class MultiHeadAttention(nn.Module):
 
         if self.relative_positional is not None:
             q_pos = q.permute(0, 2, 1, 3)
-            b,l,h,d = q_pos.size()
-            position_logits, _ = self.relative_positional(q_pos.reshape(l,b*h,d))
+            b, l, h, d = q_pos.size()
+            position_logits, _ = self.relative_positional(q_pos.reshape(l, b * h, d))
             # (bh)qk
-            logits = logits + position_logits.view(b,h,l,l)
+            logits = logits + position_logits.view(b, h, l, l)
 
         probs = torch.softmax(logits, dim=-1)
         probs = torch.dropout(probs, self.attn_drop.p, train=self.training)
@@ -338,22 +326,25 @@ class MultiHeadAttention(nn.Module):
         out = (probs @ v).transpose(1, 2).reshape(B, N, D)
         out = self.proj(out)
         out = self.proj_drop(out)
-        return rearrange(out, 'B T D -> T B D')
+        return rearrange(out, "B T D -> T B D")
+
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(
-        self, 
-        d_model, 
-        n_head, 
-        dim_feedforward, 
-        dropout, 
-        relative_positional=True, 
-        relative_positional_distance=100, 
+        self,
+        d_model,
+        n_head,
+        dim_feedforward,
+        dropout,
+        relative_positional=True,
+        relative_positional_distance=100,
         batch_first=False,
     ):
         super().__init__()
         self.batch_first = batch_first
-        self.self_attn = MultiHeadAttention(d_model, n_head, dropout, relative_positional, relative_positional_distance, batch_first=batch_first)
+        self.self_attn = MultiHeadAttention(
+            d_model, n_head, dropout, relative_positional, relative_positional_distance, batch_first=batch_first
+        )
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -365,17 +356,24 @@ class TransformerEncoderLayer(nn.Module):
             drop=dropout,
         )
 
-    def forward(self, src: torch.Tensor, src_mask: Optional[torch.Tensor] = None, src_key_padding_mask: Optional[torch.Tensor] = None, is_causal: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
         src = src + self.dropout1(self.self_attn(self.norm1(src)))
         src = src + self.mlp(self.norm2(src))
-        return src    
+        return src
 
-        #src2 = self.self_attn(src)
-        #src = src + self.dropout1(src2)
-        #src = self.norm1(src)
-        #src = src + self.mlp(src)
-        #src = self.norm2(src)
-        #return src
+        # src2 = self.self_attn(src)
+        # src = src + self.dropout1(src2)
+        # src = self.norm1(src)
+        # src = src + self.mlp(src)
+        # src = self.norm2(src)
+        # return src
+
 
 class EMGTransformer(nn.Module):
     def __init__(
@@ -394,10 +392,10 @@ class EMGTransformer(nn.Module):
         self.w_raw_in = nn.Linear(FLAGS.embed_dim, FLAGS.embed_dim)
 
         encoder_layer = TransformerEncoderLayer(
-            d_model=FLAGS.embed_dim, 
+            d_model=FLAGS.embed_dim,
             n_head=FLAGS.num_heads,
-            relative_positional=True, 
-            relative_positional_distance=100, 
+            relative_positional=True,
+            relative_positional_distance=100,
             dim_feedforward=int(FLAGS.embed_dim * FLAGS.mlp_ratio),
             dropout=FLAGS.dropout,
             batch_first=False,  # [T, B, C] input format to transformer
@@ -416,30 +414,31 @@ class EMGTransformer(nn.Module):
         if self.training:
             r = random.randrange(8)
             if r > 0:
-                x_raw[:,:-r,:] = x_raw[:,r:,:] # shift left r
-                x_raw[:,-r:,:] = 0
+                x_raw[:, :-r, :] = x_raw[:, r:, :]  # shift left r
+                x_raw[:, -r:, :] = 0
 
-        x_raw = x_raw.transpose(1,2) # put channel before time for conv
+        x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
         x_raw = self.conv_blocks(x_raw)
-        x_raw = x_raw.transpose(1,2)
+        x_raw = x_raw.transpose(1, 2)
         x_raw = self.w_raw_in(x_raw)
 
         x = x_raw
 
-        x = x.transpose(0,1) # put time first
+        x = x.transpose(0, 1)  # put time first
         x = self.transformer(x)
         x = self.norm(x)
-        x = x.transpose(0,1)
+        x = x.transpose(0, 1)
 
         if self.has_aux_out:
             return self.w_out(x), self.w_aux(x)
         else:
             return self.w_out(x)
 
+
 if __name__ == "__main__":
     FLAGS(sys.argv)
     # load pretrained weights if available
-    pretrained_path = '../EMG-MoE/export/emg_model.pth'
+    pretrained_path = "../EMG-MoE/export/emg_model.pth"
     new = EMGTransformer(
         num_features=None,
         num_outs=38,
@@ -450,11 +449,7 @@ if __name__ == "__main__":
     state_dict = load_pretrained_with_filtering(new, pretrained_path)
     new.load_state_dict(state_dict, strict=False)
     summary(
-        new, 
-        input_size=[
-            (1, FLAGS.img_size, FLAGS.in_chans), 
-            (1, FLAGS.img_size, FLAGS.in_chans),
-            (1, FLAGS.img_size, 1)
-        ],
-        depth=5
+        new,
+        input_size=[(1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, 1)],
+        depth=5,
     )

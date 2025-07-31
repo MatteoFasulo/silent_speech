@@ -5,24 +5,28 @@ from hdf5_dataset import H5EmgDataset
 from data_utils import TextTransform
 
 from absl import flags
+
 FLAGS = flags.FLAGS
 
 transform = TextTransform()
 
+
 def get_unigram(dataset):
     unigram = set()
-    for example in tqdm.tqdm(dataset, 'Building unigram'):
-        clean = transform.clean_text(example['text'])
+    for example in tqdm.tqdm(dataset, "Building unigram"):
+        clean = transform.clean_text(example["text"])
         for w in clean.split():
             unigram.add(w)
     return unigram
 
+
 def get_lexicon(vocab):
-    with open('gaddy_lexicon.txt', 'w') as fout:
+    with open("gaddy_lexicon.txt", "w") as fout:
         for word in vocab:
             # split word into char tokens:
             chars = list(word)
             fout.write(f"{word} " + " ".join(chars) + " |\n")
+
 
 if __name__ == "__main__":
     FLAGS(sys.argv)

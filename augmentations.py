@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+
 class WaveformAugment(nn.Module):
     def __init__(self, signal_mask_param=200, augment_prob=0.5):
         super().__init__()
@@ -37,6 +38,7 @@ class WaveformAugment(nn.Module):
         # Apply the mask to the input tensor
         return x * mask
 
+
 class RandomShiftAugment(nn.Module):
     def __init__(self, max_shift=8):
         super().__init__()
@@ -48,10 +50,11 @@ class RandomShiftAugment(nn.Module):
         r = np.random.randint(self.max_shift)
         if r > 0 and r < signal_length:
             shifted_x = torch.zeros_like(x)
-            shifted_x[:, :, :-r] = x[:, :, r:] # shift left r
+            shifted_x[:, :, :-r] = x[:, :, r:]  # shift left r
             return shifted_x
 
         return x
+
 
 class WhiteNoiseAugment(nn.Module):
     def __init__(self, noise_level=0.1, augment_prob=0.5):
@@ -73,6 +76,7 @@ class WhiteNoiseAugment(nn.Module):
 
         return augmented
 
+
 class SalientTimeMasking(nn.Module):
     """
     Applies time masking by preferentially selecting high-energy regions.
@@ -85,6 +89,7 @@ class SalientTimeMasking(nn.Module):
                              highest energy peaks. A higher temperature makes it more
                              like uniform random masking.
     """
+
     def __init__(self, num_masks: int, mask_len: int, temperature: float = 1.0):
         super().__init__()
         self.num_masks = num_masks
@@ -109,27 +114,25 @@ class SalientTimeMasking(nn.Module):
         # Shape: (Batch, num_masks)
         try:
             mask_start_indices = torch.multinomial(
-                mask_start_probs, 
-                num_samples=self.num_masks, 
-                replacement=True # Allow a mask to start near another mask
+                mask_start_probs,
+                num_samples=self.num_masks,
+                replacement=True,  # Allow a mask to start near another mask
             )
         except RuntimeError:
             # can happen if probabilities are all zero (silent input)
             # fall back to random uniform sampling.
-            mask_start_indices = torch.randint(
-                0, num_steps, (batch_size, self.num_masks), device=x.device
-            )
+            mask_start_indices = torch.randint(0, num_steps, (batch_size, self.num_masks), device=x.device)
 
         # Create and Apply the Mask
         x_aug = x.clone()
         for i in range(self.num_masks):
-            starts = mask_start_indices[:, i] # Shape: (Batch,)
-            time_range = torch.arange(num_steps, device=x.device).unsqueeze(0) # Shape: (1, Time)
-            
+            starts = mask_start_indices[:, i]  # Shape: (Batch,)
+            time_range = torch.arange(num_steps, device=x.device).unsqueeze(0)  # Shape: (1, Time)
+
             # boolean mask for each item in the batch
             # Shape: (Batch, Time)
             current_mask = (time_range >= starts.unsqueeze(1)) & (time_range < (starts + self.mask_len).unsqueeze(1))
-            
+
             # Apply the mask, values to zero
             x_aug = x_aug.masked_fill(current_mask.unsqueeze(-1), 0.0)
 
