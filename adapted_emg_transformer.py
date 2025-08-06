@@ -346,8 +346,8 @@ class TransformerEncoderLayer(nn.Module):
             d_model, n_head, dropout, relative_positional, relative_positional_distance, batch_first=batch_first
         )
 
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
+        self.norm1 = nn.RMSNorm(d_model)
+        self.norm2 = nn.RMSNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
 
         self.mlp = SwiGLU(
@@ -366,14 +366,6 @@ class TransformerEncoderLayer(nn.Module):
         src = src + self.dropout1(self.self_attn(self.norm1(src)))
         src = src + self.mlp(self.norm2(src))
         return src
-
-        # src2 = self.self_attn(src)
-        # src = src + self.dropout1(src2)
-        # src = self.norm1(src)
-        # src = src + self.mlp(src)
-        # src = self.norm2(src)
-        # return src
-
 
 class EMGTransformer(nn.Module):
     def __init__(
