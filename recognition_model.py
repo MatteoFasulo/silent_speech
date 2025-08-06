@@ -145,7 +145,21 @@ def train_model(model, trainset, devset, device):
                 decollate_tensor(pred, example["lengths"]), batch_first=False
             )  # seq first, as required by ctc
             y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(device)
-            loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars)
+
+            # IDEA:
+            # Instead of modifying the batch sampler to balance the distribution of silent and non-silent examples,
+            # we can apply a focal loss to the CTC loss to focus more on the non-silent examples.
+            # This way, we can still use the same batch sampler and avoid modifying the dataset.
+
+            # regular CTC loss (unreduced)
+            ctc_loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars, reduction="none")
+            # focal loss
+            p = torch.exp(-ctc_loss)
+            alpha = 0.5
+            gamma = 2.0
+            focal_ctc_loss = torch.multiply(torch.multiply(alpha, torch.pow((1-p), gamma)), ctc_loss) #((alpha)*((1-p)**gamma)*(ctc_loss))
+            # mean over the batch
+            loss = torch.mean(focal_ctc_loss)
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
 
