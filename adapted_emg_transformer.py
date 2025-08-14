@@ -2,14 +2,16 @@ import sys
 import os
 import math
 import random
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchinfo import summary
 from einops import rearrange
-from timm.layers import SwiGLU
+from timm.layers import use_fused_attn, trunc_normal_
+
+from transformer import LearnedRelativePositionalEmbedding
 
 from absl import flags
 
@@ -17,388 +19,443 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("img_size", 1600, "input image size")
 flags.DEFINE_integer("embed_dim", 192, "number of hidden dimensions")
 flags.DEFINE_integer("in_chans", 8, "number of input channels")
-flags.DEFINE_integer("num_heads", 12, "number of attention heads")
+flags.DEFINE_integer("num_heads", 3, "number of attention heads")
 flags.DEFINE_integer("num_layers", 8, "number of layers")
 flags.DEFINE_integer("downsample_factor", 8, "downsample factor")
 flags.DEFINE_float("mlp_ratio", 4.0, "MLP ratio")
 flags.DEFINE_float("dropout", 0.1, "dropout")
 
-
-def load_pretrained_with_filtering(model, pretrained_path, key_prefix_to_match="blocks"):
-    ckpt = torch.load(pretrained_path, map_location="cpu")
-    pre_sd = ckpt.get("state_dict", ckpt)
-    tgt_sd = model.state_dict()
-
-    copied, dropped = [], []
-
-    for raw_key, raw_val in pre_sd.items():
-        # strip any "module."/"model."
-        key = raw_key
-        for pfx in ("module.", "model."):
-            if key.startswith(pfx):
-                key = key[len(pfx) :]
-
-        # remap ViT "blocks.{i}" to "transformer.layers.{i}"
-        key = key.replace("blocks.", "transformer.layers.")
-
-        # remap "attn" to "self_attn" so it matches the registered submodule
-        key = key.replace(".attn.", ".self_attn.")
-
-        # copy if name+shape match
-        if key in tgt_sd and raw_val.shape == tgt_sd[key].shape:
-            tgt_sd[key].copy_(raw_val)
-            copied.append(key)
-        else:
-            dropped.append(raw_key)
-
-    print(f"Copied {len(copied)} parameter(s) into the model.")
-    if dropped:
-        print(f"Dropped {len(dropped)} pretrained param(s) (name/shape mismatch):")
-        for k in dropped:
-            print(f"– {k}")
-    return tgt_sd
-
-
 class ResBlock(nn.Module):
     def __init__(
-        self,
-        num_ins,
-        num_outs,
-        stride=1,
-        act_fn=F.relu,
+        self, num_ins, num_outs, stride=1, pre_activation=False, beta: float = 1.0
     ):
         super().__init__()
 
         self.conv1 = nn.Conv1d(num_ins, num_outs, 3, padding=1, stride=stride)
-        self.bn1 = nn.BatchNorm1d(num_outs)
+        self.norm1 = nn.BatchNorm1d(num_outs)
         self.conv2 = nn.Conv1d(num_outs, num_outs, 3, padding=1)
-        self.bn2 = nn.BatchNorm1d(num_outs)
+        self.norm2 = nn.BatchNorm1d(num_outs)
+        # self.act = nn.ReLU()
+        self.act = nn.GELU()  # TODO: test which is better
+        self.beta = beta
 
         if stride != 1 or num_ins != num_outs:
             self.residual_path = nn.Conv1d(num_ins, num_outs, 1, stride=stride)
             self.res_norm = nn.BatchNorm1d(num_outs)
+            if pre_activation:
+                self.skip = nn.Sequential(self.res_norm, self.residual_path)
+            else:
+                self.skip = nn.Sequential(self.residual_path, self.res_norm)
         else:
-            self.residual_path = None
+            self.skip = nn.Identity()
 
-        self.act_fn = act_fn
+        # ResNet v2 style pre-activation https://arxiv.org/pdf/1603.05027.pdf
+        self.pre_activation = pre_activation
+
+        if pre_activation:
+            self.block = nn.Sequential(
+                self.norm1, self.act, self.conv1, self.norm2, self.act, self.conv2
+            )
+        else:
+            self.block = nn.Sequential(
+                self.conv1, self.norm1, self.act, self.conv2, self.norm2
+            )
 
     def forward(self, x):
-        input_value = x
+        # logging.warning(f"ResBlock forward pass. x.shape: {x.shape}")
+        res = self.block(x) * self.beta
+        x = self.skip(x)
 
-        x = self.act_fn(self.bn1(self.conv1(x)))
-        x = self.bn2(self.conv2(x))
-
-        if self.residual_path is not None:
-            res = self.res_norm(self.residual_path(input_value))
+        if self.pre_activation:
+            return x + res
         else:
-            res = input_value
+            return self.act(x + res)
 
-        return self.act_fn(x + res)
-
-
-class LearnedRelativePositionalEmbedding(nn.Module):
-    # from https://github.com/pytorch/fairseq/pull/2225/commits/a7fb63f2b84d5b20c8855e9c3372a95e5d0ea073
+# https://docs.pytorch.org/torchtune/stable/_modules/torchtune/modules/position_embeddings.html#RotaryPositionalEmbeddings
+class RotaryPositionalEmbeddings(nn.Module):
     """
-    This module learns relative positional embeddings up to a fixed
-    maximum size. These are masked for decoder and unmasked for encoder
-    self attention.
-    By default the embeddings are added to keys, but could be added to
-    values as well.
+    This class implements Rotary Positional Embeddings (RoPE)
+    proposed in https://arxiv.org/abs/2104.09864.
+
+    Reference implementation (used for correctness verfication)
+    can be found here:
+    https://github.com/meta-llama/llama/blob/main/llama/model.py#L80
+
+    In this implementation we cache the embeddings for each position upto
+    ``max_seq_len`` by computing this during init.
+
     Args:
-        max_relative_pos (int): the maximum relative positions to compute embeddings for
-        num_heads (int): number of attention heads
-        embedding_dim (int): depth of embeddings
-        unmasked (bool): if the attention is unmasked (for transformer encoder)
-        heads_share_embeddings (bool): if heads share the same relative positional embeddings
-        add_to_values (bool): compute embeddings to be added to values as well
+        dim (int): Embedding dimension. This is usually set to the dim of each
+            head in the attention module computed as ``embed_dim // num_heads``
+        max_seq_len (int): Maximum expected sequence length for the
+            model, if exceeded the cached freqs will be recomputed
+        base (int): The base for the geometric progression used to compute
+            the rotation angles
     """
 
     def __init__(
         self,
-        max_relative_pos: int,
-        num_heads: int,
-        embedding_dim: int,
-        unmasked: bool = False,
-        heads_share_embeddings: bool = False,
-        add_to_values: bool = False,
-    ):
+        dim: int,
+        max_seq_len: int = 4096,
+        base: int = 10_000,
+    ) -> None:
         super().__init__()
-        self.max_relative_pos = max_relative_pos
-        self.num_heads = num_heads
-        self.embedding_dim = embedding_dim
-        self.unmasked = unmasked
-        self.heads_share_embeddings = heads_share_embeddings
-        self.add_to_values = add_to_values
-        num_embeddings = 2 * max_relative_pos - 1 if unmasked else max_relative_pos
-        embedding_size = (
-            [num_embeddings, embedding_dim, 1]
-            if heads_share_embeddings
-            else [num_heads, num_embeddings, embedding_dim, 1]
+        self.dim = dim
+        self.base = base
+        self.max_seq_len = max_seq_len
+        self.rope_init()
+
+    def rope_init(self):
+        theta = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2)[: (self.dim // 2)].float() / self.dim)
         )
-        if add_to_values:
-            embedding_size[-1] = 2
-        initial_stddev = embedding_dim ** (-0.5)
-        self.embeddings = nn.Parameter(torch.zeros(*embedding_size))
-        nn.init.normal_(self.embeddings, mean=0.0, std=initial_stddev)
+        self.register_buffer("theta", theta, persistent=False)
+        self.build_rope_cache(self.max_seq_len)
 
-    def forward(self, query, saved_state=None):
+    def build_rope_cache(self, max_seq_len: int = 4096) -> None:
+        # Create position indexes `[0, 1, ..., max_seq_len - 1]`
+        seq_idx = torch.arange(
+            max_seq_len, dtype=self.theta.dtype, device=self.theta.device
+        )
+
+        # Outer product of theta and position index; output tensor has
+        # a shape of [max_seq_len, dim // 2]
+        idx_theta = torch.einsum("i, j -> ij", seq_idx, self.theta).float()
+
+        # cache includes both the cos and sin components and so the output shape is
+        # [max_seq_len, dim // 2, 2]
+        cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1)
+        self.register_buffer("cache", cache, persistent=False)
+
+    def forward(
+        self, x: torch.Tensor, *, input_pos: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
-        Computes relative positional embeddings to be added to keys (and optionally values),
-        multiplies the embeddings for keys with queries to create positional logits,
-        returns the positional logits, along with embeddings for values (optionally)
-        which could be added to values outside this module.
         Args:
-            query (torch.Tensor): query tensor
-            saved_state (dict): saved state from previous time step
-        Shapes:
-            query: `(length, batch_size*num_heads, embed_dim)`
+            x (torch.Tensor): input tensor with shape
+                ``[b, s, n_h, h_d]``
+            input_pos (Optional[torch.Tensor]): Optional tensor which contains the position ids
+                of each token. During training, this is used to indicate the positions
+                of each token relative to its sample when packed, shape [b, s].
+                During inference, this indicates the position of the current token.
+                If none, assume the index of the token is its position id. Default is None.
+
         Returns:
-            tuple(torch.Tensor):
-                - positional logits
-                - relative positional embeddings to be added to values
+            torch.Tensor: output tensor with shape ``[b, s, n_h, h_d]``
+
+        Notation used for tensor shapes:
+            - b: batch size
+            - s: sequence length
+            - n_h: num heads
+            - h_d: head dim
         """
-        # During inference when previous states are cached
-        if saved_state is not None and "prev_key" in saved_state:
-            assert not self.unmasked, "This should only be for decoder attention"
-            length = saved_state["prev_key"].shape[-2] + 1  # `length - 1` keys are cached,
-            # `+ 1` for the current time step
-            decoder_step = True
-        else:
-            length = query.shape[0]
-            decoder_step = False
+        # input tensor has shape [b, s, n_h, h_d]
+        seq_len = x.size(1)
 
-        used_embeddings = self.get_embeddings_for_query(length)
+        # extract the values based on whether input_pos is set or not
+        rope_cache = (
+            self.cache[:seq_len] if input_pos is None else self.cache[input_pos]
+        )
 
-        values_embeddings = used_embeddings[..., 1] if self.add_to_values else None
-        positional_logits = self.calculate_positional_logits(query, used_embeddings[..., 0])
-        positional_logits = self.relative_to_absolute_indexing(positional_logits, decoder_step)
-        return (positional_logits, values_embeddings)
+        # reshape input; the last dimension is used for computing the output.
+        # Cast to float to match the reference implementation
+        # tensor has shape [b, s, n_h, h_d // 2, 2]
+        xshaped = x.float().reshape(*x.shape[:-1], -1, 2)
 
-    def get_embeddings_for_query(self, length):
-        """
-        Extract the required embeddings. The maximum relative position between two time steps is
-        `length` for masked case or `2*length - 1` for the unmasked case. If `length` is greater than
-        `max_relative_pos`, we first pad the embeddings tensor with zero-embeddings, which represent
-        embeddings when relative position is greater than `max_relative_pos`. In case `length` is
-        less than `max_relative_pos`, we don't use the first `max_relative_pos - length embeddings`.
-        Args:
-            length (int): length of the query
-        Returns:
-            torch.Tensor: embeddings used by the query
-        """
-        pad_length = max(length - self.max_relative_pos, 0)
-        start_pos = max(self.max_relative_pos - length, 0)
-        if self.unmasked:
-            with torch.no_grad():
-                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, pad_length))
-            used_embeddings = padded_embeddings.narrow(-3, start_pos, 2 * length - 1)
-        else:
-            with torch.no_grad():
-                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, 0))
-            used_embeddings = padded_embeddings.narrow(-3, start_pos, length)
-        return used_embeddings
+        # reshape the cache for broadcasting
+        # tensor has shape [b, s, 1, h_d // 2, 2] if packed samples,
+        # otherwise has shape [1, s, 1, h_d // 2, 2]
+        rope_cache = rope_cache.view(-1, xshaped.size(1), 1, xshaped.size(3), 2)
 
-    def calculate_positional_logits(self, query, relative_embeddings):
-        """
-        Multiplies query with the relative positional embeddings to create relative
-        positional logits
-        Args:
-            query (torch.Tensor): Input tensor representing queries
-            relative_embeddings (torch.Tensor): relative embeddings compatible with query
-        Shapes:
-            query: `(length, batch_size*num_heads, embed_dim)` if heads share embeddings
-                   else `(length, batch_size, num_heads, embed_dim)`
-            relative_embeddings: `(max_allowed_relative_positions, embed_dim)` if heads share embeddings
-                                 else `(num_heads, max_allowed_relative_positions, embed_dim)`
-                                 where `max_allowed_relative_positions` is `length` if masked
-                                 else `2*length - 1`
-        Returns:
-            torch.Tensor: relative positional logits
-        """
-        if self.heads_share_embeddings:
-            positional_logits = torch.einsum("lbd,md->lbm", query, relative_embeddings)
-        else:
-            query = query.view(query.shape[0], -1, self.num_heads, self.embedding_dim)
-            positional_logits = torch.einsum("lbhd,hmd->lbhm", query, relative_embeddings)
-            positional_logits = positional_logits.contiguous().view(
-                positional_logits.shape[0], -1, positional_logits.shape[-1]
-            )
-        # mask out tokens out of range
-        length = query.size(0)
-        if length > self.max_relative_pos:
-            # there is some padding
-            pad_length = length - self.max_relative_pos
-            positional_logits[:, :, :pad_length] -= 1e8
-            if self.unmasked:
-                positional_logits[:, :, -pad_length:] -= 1e8
-        return positional_logits
+        # tensor has shape [b, s, n_h, h_d // 2, 2]
+        x_out = torch.stack(
+            [
+                xshaped[..., 0] * rope_cache[..., 0]
+                - xshaped[..., 1] * rope_cache[..., 1],
+                xshaped[..., 1] * rope_cache[..., 0]
+                + xshaped[..., 0] * rope_cache[..., 1],
+            ],
+            -1,
+        )
 
-    def relative_to_absolute_indexing(self, x, decoder_step):
-        """
-        Index tensor x (relative positional logits) in terms of absolute positions
-        rather than relative positions. Last dimension of x represents relative position
-        with respect to the first dimension, whereas returned tensor has both the first
-        and last dimension indexed with absolute positions.
-        Args:
-            x (torch.Tensor): positional logits indexed by relative positions
-            decoder_step (bool): is this is a single decoder step (during inference)
-        Shapes:
-            x: `(length, batch_size*num_heads, length)` for masked case or
-               `(length, batch_size*num_heads, 2*length - 1)` for unmasked
-        Returns:
-            torch.Tensor: positional logits represented using absolute positions
-        """
-        length, bsz_heads, _ = x.shape
+        # tensor has shape [b, s, n_h, h_d]
+        x_out = x_out.flatten(3)
+        return x_out.type_as(x)
 
-        if decoder_step:
-            return x.contiguous().view(bsz_heads, 1, -1)
-
-        if self.unmasked:
-            x = nn.functional.pad(x, (0, 1))
-            x = x.transpose(0, 1)
-            x = x.contiguous().view(bsz_heads, length * 2 * length)
-            x = nn.functional.pad(x, (0, length - 1))
-            # Reshape and slice out the padded elements.
-            x = x.view(bsz_heads, length + 1, 2 * length - 1)
-            return x[:, :length, length - 1 :]
-        else:
-            x = nn.functional.pad(x, (1, 0))
-            x = x.transpose(0, 1)
-            x = x.contiguous().view(bsz_heads, length + 1, length)
-            return x[:, 1:, :]
-
-
-class MultiHeadAttention(nn.Module):
+class LRPEAttention(nn.Module):
+    """
+    Multi Head Attention with Learned Relative Positional Encoding (LRPE) applied to the logits.
+    """
     def __init__(
         self,
-        d_model,
-        n_head,
-        dropout=0.1,
-        relative_positional=True,
+        dim,
+        num_heads=3,
+        qkv_bias=True,
+        attn_drop=0.1,
+        norm_layer: nn.Module = nn.LayerNorm,
         relative_positional_distance=100,
-        batch_first=False,
-        qkv_bias: bool = True,
-        qk_norm: bool = True,
-        norm_layer: nn.Module = nn.RMSNorm,
     ):
         super().__init__()
-        assert d_model % n_head == 0, "d_model should be divisible by n_head"
-        self.num_heads = n_head
-        self.head_dim = d_model // n_head
-        self.batch_first = batch_first
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads, self.dim = num_heads, dim
+        self.hd = dim // num_heads
 
-        self.qkv = nn.Linear(d_model, d_model * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(dropout)
-        self.proj = nn.Linear(d_model, d_model)
-        self.proj_drop = nn.Dropout(dropout)
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
 
-        if relative_positional:
-            self.relative_positional = LearnedRelativePositionalEmbedding(
-                relative_positional_distance, n_head, self.head_dim, True
-            )
-        else:
-            self.relative_positional = None
+        self.relative_positional = LearnedRelativePositionalEmbedding(
+            relative_positional_distance, num_heads, self.hd, True
+        )
 
-    def forward(self, x: torch.Tensor, attn_mask=None) -> torch.Tensor:
-        # X is (T, B, D)
-        x = rearrange(x, "T B D -> B T D")
+    def forward(self, x, attn_mask=None):
+        """Runs the multi-head self-attention layer.
+
+        Args:
+          x: the input to the layer, a tensor of shape [batch_size, length, d_model]
+        Returns:
+          A single tensor containing the output from this layer
+        """
         B, N, D = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
 
         # [B, n_h, N, h_d]
         scale_factor = 1 / math.sqrt(q.size(-1))
         logits = q @ k.transpose(-2, -1) * scale_factor
 
-        if self.relative_positional is not None:
-            q_pos = q.permute(0, 2, 1, 3)
-            b, l, h, d = q_pos.size()
-            position_logits, _ = self.relative_positional(q_pos.reshape(l, b * h, d))
-            # (bh)qk
-            logits = logits + position_logits.view(b, h, l, l)
+        # q shape: [B, n_h, N, h_d]
+        q_pos = q.permute(0, 2, 1, 3) # [B, N, n_h, h_d]
+        b, l, h, d = q_pos.size()
+        # The forward pass of relative_positional expects (length, batch*heads, embed_dim)
+        position_logits, _ = self.relative_positional(q_pos.reshape(l, b * h, d))
+        # position_logits is (b*h, l, l). We need to reshape to (b, h, l, l)
+        position_logits = position_logits.view(b, h, l, l)
+        logits = logits + position_logits
 
-        probs = torch.softmax(logits, dim=-1)
-        probs = torch.dropout(probs, self.attn_drop.p, train=self.training)
+        probs = F.softmax(logits, dim=-1)
+        probs = self.attn_drop(probs)
 
         out = (probs @ v).transpose(1, 2).reshape(B, N, D)
         out = self.proj(out)
-        out = self.proj_drop(out)
-        return rearrange(out, "B T D -> T B D")
 
+        return out
 
-class TransformerEncoderLayer(nn.Module):
+class RoPEAttention(nn.Module):
+    """
+    Multi Head Attention with Rotary Position Embedding (RoPE) applied to the Q and K tensors.
+    Fused Scaled Dot Product Attention is used.
+    """
     def __init__(
         self,
-        d_model,
-        n_head,
-        dim_feedforward,
-        dropout,
-        relative_positional=True,
-        relative_positional_distance=100,
-        batch_first=False,
+        dim: int,
+        num_heads=3,
+        qkv_bias=True,
+        attn_drop=0.1,
+        norm_layer: nn.Module = nn.LayerNorm,
     ):
         super().__init__()
-        self.batch_first = batch_first
-        self.self_attn = MultiHeadAttention(
-            d_model, n_head, dropout, relative_positional, relative_positional_distance, batch_first=batch_first
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads, self.dim = num_heads, dim
+        self.hd = dim // num_heads
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        self.rope = RotaryPositionalEmbeddings(dim=self.hd, max_seq_len=4096, base=10_000)
+
+    def forward(self, x, attn_mask=None):
+        B, N, D = x.shape  # [batch_size, total_number_tokens, embedding_dimension]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+
+        # Apply RoPE to q and k
+        # q/k shape: [B, num_heads, N, head_dim]
+        q = q.permute(0, 2, 1, 3) # [B, N, num_heads, head_dim]
+        k = k.permute(0, 2, 1, 3) # [B, N, num_heads, head_dim]
+        
+        q = self.rope(q)
+        k = self.rope(k)
+
+        q = q.permute(0, 2, 1, 3)  # [B, num_heads, N, head_dim]
+        k = k.permute(0, 2, 1, 3)  # [B, num_heads, N, head_dim]
+
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1).unsqueeze(1).expand(B, self.num_heads, N, N).bool()
+
+        x = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            is_causal=False, # bidirectional attention
+            enable_gqa=False, # not using Grouped Query Attention
         )
 
-        self.norm1 = nn.RMSNorm(d_model)
-        self.norm2 = nn.RMSNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
+        x = x.transpose(2, 1).reshape(B, N, D)
+        x = self.proj(x)
 
-        self.mlp = SwiGLU(
-            in_features=d_model,
-            hidden_features=dim_feedforward,
-            drop=dropout,
-        )
+        return x
 
-    def forward(
+class Mlp(nn.Module):
+    def __init__(
         self,
-        src: torch.Tensor,
-        src_mask: Optional[torch.Tensor] = None,
-        src_key_padding_mask: Optional[torch.Tensor] = None,
-        is_causal: bool = False,
-    ) -> torch.Tensor:
-        src = src + self.dropout1(self.self_attn(self.norm1(src)))
-        src = src + self.mlp(self.norm2(src))
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        dropout: float = 0.1,
+        act_layer: nn.Module = nn.GELU,
+    ):
+        super().__init__()
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_features, out_features)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.dropout(self.act(self.fc1(x))))
+
+
+class CustomAttentionBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        proj_drop: float = 0.0,
+        attn_drop: float = 0.0,
+        act_layer: nn.Module = nn.GELU,
+        norm_layer: nn.Module = nn.LayerNorm,
+        num_channels: int = 23,
+        attention_type: str = "default",
+        block_idx=0,
+    ) -> None:
+        super().__init__()
+        if attention_type == "rope":
+            self.attn = RoPEAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                attn_drop=attn_drop,
+                norm_layer=norm_layer,
+            )
+        elif attention_type == "lrpe":
+            self.attn = LRPEAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                attn_drop=attn_drop,
+                norm_layer=norm_layer,
+                relative_positional_distance=100,
+            )
+        else:
+            raise ValueError(f"Unknown attention type: {attention_type}")
+
+        self.dropout = nn.Dropout(proj_drop)
+        self.norm1 = norm_layer(dim)
+        ffn_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=ffn_dim,
+            out_features=dim,
+            dropout=proj_drop,
+            act_layer=act_layer,
+        )
+        self.dropout1 = nn.Dropout(proj_drop)
+        self.dropout2 = nn.Dropout(proj_drop)
+        self.norm2 = norm_layer(dim)
+
+        self.activation = act_layer()
+
+    def forward(self, src: torch.Tensor, attn_mask=None) -> torch.Tensor:
+        src2 = self.attn(src)
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        src2 = self.mlp(src)
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
         return src
 
 class EMGTransformer(nn.Module):
     def __init__(
         self,
-        num_features,
-        num_outs,
-        num_aux_outs=None,
+        num_features: int,
+        num_outs: int,
+        num_aux_outs: int = None,
+        in_chans: int = 8,
+        embed_dim: int = 192,
+        n_layer: int = 8,
+        n_head: int = 3,
+        mlp_ratio: int = 4,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.1,
+        proj_drop: float = 0.1,
+        attention_type: str = "lrpe",
+        act_layer: nn.Module = nn.GELU,
+        norm_layer: nn.Module = nn.LayerNorm,
+        freeze_blocks: bool = False
     ):
         super().__init__()
 
-        self.conv_blocks = nn.Sequential(
-            ResBlock(FLAGS.in_chans, FLAGS.embed_dim, 2),
-            ResBlock(FLAGS.embed_dim, FLAGS.embed_dim, 2),
-            ResBlock(FLAGS.embed_dim, FLAGS.embed_dim, 2),
-        )
-        self.w_raw_in = nn.Linear(FLAGS.embed_dim, FLAGS.embed_dim)
+        self.in_chans = in_chans
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.embed_dim = embed_dim
 
-        encoder_layer = TransformerEncoderLayer(
-            d_model=FLAGS.embed_dim,
-            n_head=FLAGS.num_heads,
-            relative_positional=True,
-            relative_positional_distance=100,
-            dim_feedforward=int(FLAGS.embed_dim * FLAGS.mlp_ratio),
-            dropout=FLAGS.dropout,
-            batch_first=False,  # [T, B, C] input format to transformer
+        self.conv_blocks = nn.Sequential(
+            ResBlock(in_chans, embed_dim, 2),
+            ResBlock(embed_dim, embed_dim, 2),
+            ResBlock(embed_dim, embed_dim, 2),
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
-        self.norm = nn.RMSNorm(FLAGS.embed_dim)
-        self.w_out = nn.Linear(FLAGS.embed_dim, num_outs)
+        self.w_raw_in = nn.Linear(embed_dim, embed_dim)
+
+        self.blocks = nn.ModuleList(
+            [
+                CustomAttentionBlock(
+                    dim=embed_dim,
+                    num_heads=n_head,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=qkv_bias,
+                    attn_drop=attn_drop,
+                    proj_drop=proj_drop,
+                    act_layer=act_layer,
+                    norm_layer=norm_layer,
+                    num_channels=in_chans,
+                    attention_type=attention_type,
+                    block_idx=i,
+                )
+                for i in range(n_layer)
+            ]
+        )
+        self.w_out = nn.Linear(embed_dim, num_outs)
 
         self.has_aux_out = num_aux_outs is not None
         if self.has_aux_out:
-            self.w_aux = nn.Linear(FLAGS.embed_dim, num_aux_outs)
+            self.w_aux = nn.Linear(embed_dim, num_aux_outs)
+        # ----------------------------------------------
+        self.initialize_weights()
+
+        # Freeze multi-head attention blocks
+        if freeze_blocks:
+            for param in self.blocks.parameters():
+                param.requires_grad = False
+
+    def initialize_weights(self):
+        """Initializes the model weights."""
+        # Encodings Initializations code taken from the LaBraM paper
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x_feat, x_raw, session_ids):
         # x shape is (batch, time, electrode)
@@ -410,27 +467,23 @@ class EMGTransformer(nn.Module):
                 x_raw[:, -r:, :] = 0
 
         x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
-        x_raw = self.conv_blocks(x_raw)
-        x_raw = x_raw.transpose(1, 2)
-        x_raw = self.w_raw_in(x_raw)
+        x_raw = self.conv_blocks(x_raw) # N B D
+        x_raw = x_raw.transpose(1, 2) # B N D
+        x_raw = self.w_raw_in(x_raw) # B N D
 
         x = x_raw
-
-        x = x.transpose(0, 1)  # put time first
-        x = self.transformer(x)
-        x = self.norm(x)
-        x = x.transpose(0, 1)
+        for blk in self.blocks:
+            x = blk(x, attn_mask=None)
 
         if self.has_aux_out:
             return self.w_out(x), self.w_aux(x)
         else:
             return self.w_out(x)
 
-
 if __name__ == "__main__":
     FLAGS(sys.argv)
     # load pretrained weights if available
-    pretrained_path = "../EMG-MoE/export/emg_model.pth"
+    pretrained_path = "/capstor/scratch/cscs/mfasulo/checkpoints/finetuning/epn612/pretrained/full_finetune/run_20250808_111335/checkpoints/new_epn612_pretrained_full_finetune-epoch=39-val_loss=0.4665.ckpt"
     new = EMGTransformer(
         num_features=None,
         num_outs=38,
@@ -438,10 +491,11 @@ if __name__ == "__main__":
     )
     print("Model", new)
 
-    state_dict = load_pretrained_with_filtering(new, pretrained_path)
+    state_dict = torch.load(pretrained_path, map_location="cpu", weights_only=False)["state_dict"]
+    state_dict = {k.replace('model.','') if k.startswith('model.') else k: v for k, v in state_dict.items()}
     new.load_state_dict(state_dict, strict=False)
     summary(
         new,
         input_size=[(1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, 1)],
-        depth=5,
+        depth=10,
     )
