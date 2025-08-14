@@ -106,12 +106,17 @@ class Model(nn.Module):
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
-    model = Model(num_outs=38)
+    model = Model(
+        num_features=None,
+        num_outs=38,
+        num_aux_outs=None,
+    )
     model.eval()
     x = torch.randn(1, FLAGS.img_size, FLAGS.in_chans)
     lengths = torch.tensor([FLAGS.img_size]) // FLAGS.downsample_factor
     print(model)
     summary(
         model,
-        input_data=(torch.randn(1, FLAGS.img_size, FLAGS.in_chans), lengths),
+        input_size=[(1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, 1)],
+        depth=5,
     )
