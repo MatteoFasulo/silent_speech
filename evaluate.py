@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from adapted_emg_transformer import EMGTransformer
+#from architecture import Model as EMGTransformer
 from transduction_model import test, save_output
 from hdf5_dataset import H5EmgDataset
 from asr_evaluation import evaluate
@@ -56,7 +57,7 @@ def main():
     for fname in FLAGS.models:
         state_dict = torch.load(fname)
         model = EMGTransformer(testset.num_features, testset.num_speech_features, len(phoneme_inventory)).to(device)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, strict=True)  # Ensure all keys match
         models.append(model)
     ensemble = EnsembleModel(models)
 
