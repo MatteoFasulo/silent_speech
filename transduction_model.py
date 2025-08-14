@@ -14,7 +14,8 @@ from torchinfo import summary
 from torch.utils.tensorboard import SummaryWriter
 
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
-from adapted_emg_transformer import EMGTransformer, load_pretrained_with_filtering
+from adapted_emg_transformer import EMGTransformer
+#from architecture import Model as EMGTransformer
 from align import align_from_distances
 from asr_evaluation import evaluate
 from data_utils import phoneme_inventory, decollate_tensor, combine_fixed_length
@@ -33,6 +34,7 @@ flags.DEFINE_float("data_size_fraction", 1.0, "fraction of training data to use"
 flags.DEFINE_float("phoneme_loss_weight", 0.5, "weight of auxiliary phoneme prediction loss")
 flags.DEFINE_float("l2", 1e-7, "weight decay")
 flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
+flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("output_directory", "output", "output directory")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -188,7 +190,13 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
     )
 
     n_phones = len(phoneme_inventory)
-    model = EMGTransformer(devset.num_features, devset.num_speech_features, n_phones).to(device)
+    model = EMGTransformer(
+        devset.num_features, 
+        devset.num_speech_features, 
+        n_phones,
+        freeze_blocks=FLAGS.freeze_blocks
+    ).to(device)
+    logging.info(f"Training model with {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters")
 
     # Model summary
     summary(
@@ -201,7 +209,8 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
     )
 
     if FLAGS.start_training_from is not None:
-        state_dict = load_pretrained_with_filtering(model, FLAGS.start_training_from)
+        state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
+        state_dict = {k.replace('model.','') if k.startswith('model.') else k: v for k, v in state_dict.items()}
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
@@ -209,21 +218,21 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         vocoder = Vocoder()
 
     optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
-    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
+    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', 0.5, patience=FLAGS.learning_rate_patience)
 
     def set_lr(new_lr):
         for param_group in optim.param_groups:
-            param_group["lr"] = new_lr
+            param_group['lr'] = new_lr
 
     target_lr = FLAGS.learning_rate
-
     def schedule_lr(iteration):
         iteration = iteration + 1
         if iteration <= FLAGS.learning_rate_warmup:
-            set_lr(iteration * target_lr / FLAGS.learning_rate_warmup)
+            set_lr(iteration*target_lr/FLAGS.learning_rate_warmup)
 
     seq_len = 200
     batch_idx = 0
+    best_val_loss = float("inf")
     for epoch_idx in range(n_epochs):
         losses = []
         for batch in tqdm.tqdm(dataloader, "Train step", disable=None):
@@ -246,24 +255,23 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
             batch_idx += 1
 
         train_loss = np.mean(losses)
+        val, phoneme_acc, _ = test(model, devset, device)
+        lr_sched.step(val)
         current_lr = optim.param_groups[0]["lr"]
         writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
         writer.add_scalar("train/lr", current_lr, epoch_idx)
-
-        val, phoneme_acc, _ = test(model, devset, device)
-        lr_sched.step(val)
         writer.add_scalar("val/loss", val, epoch_idx)
         writer.add_scalar("val/phoneme_acc", phoneme_acc, epoch_idx)
         logging.info(
             f"finished epoch {epoch_idx+1} - validation loss: {val:.4f} training loss: {train_loss:.4f} phoneme accuracy: {phoneme_acc*100:.2f}"
         )
 
-        if FLAGS.start_training_from is not None:
-            ckpt_name = f"pretrained_model_{run_id}.pt"
+        if val < best_val_loss:
+            best_val_loss = val
+            torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"))
+            print(f"Val loss improved, new best val loss: {val:.4f}")
         else:
-            ckpt_name = f"model_{run_id}.pt"
-
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, ckpt_name))
+            torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, f"model_{run_id}_last.pt"))
 
         if save_sound_outputs:
             save_output(
