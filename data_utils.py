@@ -426,7 +426,14 @@ def applyCustomCorrections(sentence, replacement_dict):
 class TextTransform(object):
     def __init__(self):
         self.transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
-        self.replacement_dict = {"£250": "two hundred fifty pounds", "£1000": "one thousand pounds"}
+        self.replacement_dict = {
+            "£250": "two hundred fifty pounds", 
+            "£1000": "one thousand pounds",
+            "X.": "ten",
+            "XIII.": "thirteen",
+            "XII.": "twelve",
+            "IV.": "four"
+            }
         self.chars = [x for x in string.ascii_lowercase + string.digits + "|"]
 
     def clean_text(self, text):
