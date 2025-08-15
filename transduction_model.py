@@ -196,7 +196,6 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         n_phones,
         freeze_blocks=FLAGS.freeze_blocks
     ).to(device)
-    logging.info(f"Training model with {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters")
 
     # Model summary
     summary(
@@ -269,7 +268,7 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         if val < best_val_loss:
             best_val_loss = val
             torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"))
-            print(f"Val loss improved, new best val loss: {val:.4f}")
+            logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
             torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, f"model_{run_id}_last.pt"))
 
