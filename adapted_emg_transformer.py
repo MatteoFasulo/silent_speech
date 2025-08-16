@@ -357,7 +357,6 @@ class CustomAttentionBlock(nn.Module):
         else:
             raise ValueError(f"Unknown attention type: {attention_type}")
 
-        self.dropout = nn.Dropout(proj_drop)
         self.norm1 = norm_layer(dim)
         ffn_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
