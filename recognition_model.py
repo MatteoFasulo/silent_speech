@@ -15,6 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 from adapted_emg_transformer import EMGTransformer
+#from architecture import Model as EMGTransformer
 from data_utils import combine_fixed_length, decollate_tensor
 
 from absl import flags
@@ -25,20 +26,22 @@ flags.DEFINE_boolean("dev", False, "evaluate dev instead of test")
 flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
 flags.DEFINE_integer("batch_size", 32, "training batch size")
 flags.DEFINE_integer("num_epochs", 200, "number of epochs")
-flags.DEFINE_float("learning_rate", 3e-4, "learning rate")
+flags.DEFINE_float("learning_rate", 5e-4, "learning rate")
+flags.DEFINE_integer("learning_rate_patience", 10, "learning rate decay patience")
 flags.DEFINE_integer("learning_rate_warmup", 1000, "steps of linear warmup")
-flags.DEFINE_float("l2", 0.0, "weight decay")
 flags.DEFINE_string("start_training_from", None, "start training from this model")
+flags.DEFINE_float("l2", 0, "weight decay")
+flags.DEFINE_integer("eval_interval", 5, "evaluate every n epochs")
 flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
 flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
+flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("lm_directory", "/users/mfasulo/silent_speech/KenLM/", "directory with language model files")
 flags.DEFINE_boolean("verbose", False, "print verbose output")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 seq_len = 200
 
-
-def test(model, dset, device):
+def test(model, dset, device, beam_size: int = 150):
     model.eval()
 
     tkns = [c for c in dset.text_transform.chars] + ["_"]
@@ -52,7 +55,7 @@ def test(model, dset, device):
         lm_weight=2,  # default is 2; Gaddy sets to 1.85
         # word_score  = -3,
         # sil_score   = -2,
-        beam_size=150,  # SET TO 150 during inference
+        beam_size=beam_size
     )
 
     dataloader = torch.utils.data.DataLoader(
@@ -76,10 +79,12 @@ def test(model, dset, device):
             pred = F.log_softmax(model(X, X_raw, sess), dim=-1)
 
             beam_results = decoder(pred.detach().cpu())
-            pred_text = " ".join(beam_results[0][0].words).strip().lower()
+            pred_text = " ".join(beam_results[0][0].words).strip()
+            pred_text = dset.text_transform.clean_text(pred_text)
             target_text = dset.text_transform.clean_text(example["text"][0])
 
-            if len(target_text) > 0:
+            # Skip empty target texts
+            if target_text != "":
                 references.append(target_text)
                 predictions.append(pred_text)
 
@@ -105,16 +110,14 @@ def train_model(model, trainset, devset, device):
 
     n_chars = len(devset.text_transform.chars)
     if FLAGS.start_training_from is not None:
-        state_dict = torch.load(FLAGS.start_training_from, map_location=device)
-        # remove the w_out layer if it exists, as the shape would not match
-        if "w_out.weight" in state_dict:
-            del state_dict["w_out.weight"]
-            del state_dict["w_out.bias"]
+        state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
+        state_dict = {k.replace('model.','') if k.startswith('model.') else k: v for k, v in state_dict.items()}
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
-    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2, lr=FLAGS.learning_rate)
-    lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
+    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
+    #lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
+    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', 0.5, patience=FLAGS.learning_rate_patience)
 
     def set_lr(new_lr):
         for param_group in optim.param_groups:
@@ -128,7 +131,7 @@ def train_model(model, trainset, devset, device):
             set_lr(iteration * target_lr / FLAGS.learning_rate_warmup)
 
     batch_idx = 0
-
+    best_val_loss = float("inf")
     for epoch_idx in range(FLAGS.num_epochs):
         losses = []
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
@@ -146,53 +149,38 @@ def train_model(model, trainset, devset, device):
             )  # seq first, as required by ctc
             y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(device)
 
-            # IDEA:
-            # Instead of modifying the batch sampler to balance the distribution of silent and non-silent examples,
-            # we can apply a focal loss to the CTC loss to focus more on the non-silent examples.
-            # This way, we can still use the same batch sampler and avoid modifying the dataset.
-
-            # regular CTC loss (unreduced)
-            ctc_loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars, reduction="none")
-            # focal loss
-            p = torch.exp(-ctc_loss)
-            alpha = 0.5
-            gamma = 2.0
-            focal_ctc_loss = torch.multiply(torch.multiply(alpha, torch.pow((1-p), gamma)), ctc_loss) #((alpha)*((1-p)**gamma)*(ctc_loss))
-            # mean over the batch
-            loss = torch.mean(focal_ctc_loss)
+            # CTC loss
+            loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars)
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
 
             loss.backward()
             if (batch_idx + 1) % 2 == 0:
-                nn.utils.clip_grad_norm_(model.parameters(), 10)
                 optim.step()
                 optim.zero_grad(set_to_none=True)
-
-            # del example, pred, loss, y, sess, X, X_raw
-            # torch.cuda.empty_cache()
 
             batch_idx += 1
 
         train_loss = np.mean(losses)
-        current_lr = optim.param_groups[0]["lr"]
-        writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
-        writer.add_scalar("train/lr", current_lr, epoch_idx)
-
-        if (epoch_idx + 1) % 5 == 0:
+        if epoch_idx % FLAGS.eval_interval == 0:
             val = test(model, devset, device)
-            writer.add_scalar("val/wer", val, epoch_idx)
-            logging.info(
-                f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} validation WER: {val*100:.2f}"
-            )
+            logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} validation WER: {val*100:.2f}")
+            if val < best_val_loss:
+                best_val_loss = val
+                torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "best_model.pt"))
+                logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
             logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed")
 
-        lr_sched.step()
+        lr_sched.step(val)
+        current_lr = optim.param_groups[0]["lr"]
+        writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
+        writer.add_scalar("train/lr", current_lr, epoch_idx)
+        writer.add_scalar("val/wer", val, epoch_idx)
+        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "last.pt"))
 
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "model.pt"))
-
-    model.load_state_dict(torch.load(os.path.join(FLAGS.output_directory, "model.pt")))  # re-load best parameters
+    # re-load best parameters
+    model.load_state_dict(torch.load(os.path.join(FLAGS.output_directory, "best_model.pt")))  
 
     return model
 
@@ -204,7 +192,10 @@ def evaluate_saved():
     silent_flags = [d.silent for (d, _) in testset.example_indices]
     print(f"Unique silent flags in test set: {set(silent_flags)}")
     n_chars = len(testset.text_transform.chars)
-    model = EMGTransformer(testset.num_features, n_chars + 1).to(device)
+    model = EMGTransformer(
+        testset.num_features, 
+        n_chars + 1,
+    ).to(device)
     model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
     summary(
         model,
@@ -215,7 +206,7 @@ def evaluate_saved():
         ],
     )
     print(f"Loaded model from {FLAGS.evaluate_saved}")
-    test_wer = test(model, testset, device)
+    test_wer = test(model, testset, device, beam_size=1500)
     print("WER:", test_wer)
 
 
@@ -239,7 +230,11 @@ def main():
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
 
     n_chars = len(devset.text_transform.chars)
-    model = EMGTransformer(devset.num_features, n_chars + 1).to(device)
+    model = EMGTransformer(
+        devset.num_features, 
+        n_chars + 1,
+        freeze_blocks=FLAGS.freeze_blocks
+    ).to(device)
     summary(
         model,
         input_data=[
@@ -252,27 +247,10 @@ def main():
     best_ckpt_model = train_model(model, trainset, devset, device)
 
     # Run test
-    test_wer = test(best_ckpt_model, testset, device)
+    test_wer = test(best_ckpt_model, testset, device, beam_size=1500)
     logging.info("Test WER: %.2f%%", test_wer * 100)
     writer.add_scalar("test/wer", test_wer, 0)
-    writer.add_hparams(
-        {
-            "window_size": FLAGS.img_size,
-            "learning_rate": FLAGS.learning_rate,
-            "l2": FLAGS.l2,
-            "num_epochs": FLAGS.num_epochs,
-            "embed_dim": FLAGS.embed_dim,
-            "num_heads": FLAGS.num_heads,
-            "num_layers": FLAGS.num_layers,
-            "downsample_factor": FLAGS.downsample_factor,
-            "mlp_ratio": FLAGS.mlp_ratio,
-        },
-        {
-            "test_wer": test_wer,
-        },
-    )
     return
-
 
 if __name__ == "__main__":
     FLAGS(sys.argv)

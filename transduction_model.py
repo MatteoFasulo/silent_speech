@@ -38,7 +38,7 @@ flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks
 flags.DEFINE_string("output_directory", "output", "output directory")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
+seq_len = 200
 
 def test(model, testset, device):
     model.eval()
@@ -229,7 +229,6 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         if iteration <= FLAGS.learning_rate_warmup:
             set_lr(iteration*target_lr/FLAGS.learning_rate_warmup)
 
-    seq_len = 200
     batch_idx = 0
     best_val_loss = float("inf")
     for epoch_idx in range(n_epochs):
