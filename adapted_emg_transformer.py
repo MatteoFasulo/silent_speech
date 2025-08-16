@@ -242,65 +242,6 @@ class LRPEAttention(nn.Module):
 
         return out
 
-class RoPEAttention(nn.Module):
-    """
-    Multi Head Attention with Rotary Position Embedding (RoPE) applied to the Q and K tensors.
-    Fused Scaled Dot Product Attention is used.
-    """
-    def __init__(
-        self,
-        dim: int,
-        num_heads=3,
-        qkv_bias=True,
-        attn_drop=0.1,
-        norm_layer: nn.Module = nn.LayerNorm,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.num_heads, self.dim = num_heads, dim
-        self.hd = dim // num_heads
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.rope = RotaryPositionalEmbeddings(dim=self.hd, max_seq_len=4096, base=10_000)
-
-    def forward(self, x, attn_mask=None):
-        B, N, D = x.shape  # [batch_size, total_number_tokens, embedding_dimension]
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-
-        # Apply RoPE to q and k
-        # q/k shape: [B, num_heads, N, head_dim]
-        q = q.permute(0, 2, 1, 3) # [B, N, num_heads, head_dim]
-        k = k.permute(0, 2, 1, 3) # [B, N, num_heads, head_dim]
-        
-        q = self.rope(q)
-        k = self.rope(k)
-
-        q = q.permute(0, 2, 1, 3)  # [B, num_heads, N, head_dim]
-        k = k.permute(0, 2, 1, 3)  # [B, num_heads, N, head_dim]
-
-        if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(1).unsqueeze(1).expand(B, self.num_heads, N, N).bool()
-
-        x = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-            is_causal=False, # bidirectional attention
-            enable_gqa=False, # not using Grouped Query Attention
-        )
-
-        x = x.transpose(2, 1).reshape(B, N, D)
-        x = self.proj(x)
-
-        return x
-
 class Mlp(nn.Module):
     def __init__(
         self,
@@ -332,31 +273,16 @@ class CustomAttentionBlock(nn.Module):
         attn_drop: float = 0.0,
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
-        num_channels: int = 23,
-        attention_type: str = "default",
-        block_idx=0,
     ) -> None:
         super().__init__()
-        if attention_type == "rope":
-            self.attn = RoPEAttention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                attn_drop=attn_drop,
-                norm_layer=norm_layer,
-            )
-        elif attention_type == "lrpe":
-            self.attn = LRPEAttention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                attn_drop=attn_drop,
-                norm_layer=norm_layer,
-                relative_positional_distance=100,
-            )
-        else:
-            raise ValueError(f"Unknown attention type: {attention_type}")
-
+        self.attn = LRPEAttention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            attn_drop=attn_drop,
+            norm_layer=norm_layer,
+            relative_positional_distance=100,
+        )
         self.norm1 = norm_layer(dim)
         ffn_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
@@ -395,7 +321,6 @@ class EMGTransformer(nn.Module):
         qkv_bias: bool = True,
         attn_drop: float = 0.1,
         proj_drop: float = 0.1,
-        attention_type: str = "lrpe",
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
         freeze_blocks: bool = False
@@ -425,11 +350,8 @@ class EMGTransformer(nn.Module):
                     proj_drop=proj_drop,
                     act_layer=act_layer,
                     norm_layer=norm_layer,
-                    num_channels=in_chans,
-                    attention_type=attention_type,
-                    block_idx=i,
                 )
-                for i in range(n_layer)
+                for _ in range(n_layer)
             ]
         )
         self.w_out = nn.Linear(embed_dim, num_outs)
