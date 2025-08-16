@@ -21,7 +21,7 @@ def get_unigram(dataset):
 
 
 def get_lexicon(vocab):
-    with open("gaddy_lexicon.txt", "w") as fout:
+    with open("KenLM/gaddy_lexicon.txt", "w") as fout:
         for word in vocab:
             # split word into char tokens:
             chars = list(word)

@@ -52,7 +52,7 @@ class ResBlock(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, num_features, num_outs, num_aux_outs=None):
+    def __init__(self, num_features, num_outs, num_aux_outs=None, *args, **kwargs):
         super().__init__()
 
         self.conv_blocks = nn.Sequential(
