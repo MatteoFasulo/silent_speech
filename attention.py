@@ -4,10 +4,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from timm.layers import Mlp, LayerScale, DropPath
-
 from pos_embedding import RotaryEmbedding
+from timm.layers import DropPath, LayerScale, Mlp
 
 ################
 # RoPE Attention
@@ -44,7 +42,9 @@ class RoPEAttention(nn.Module):
 
     def forward(self, x, key_padding_mask: Optional[torch.Tensor] = None):
         B, N, D = x.shape  # [batch_size, total_number_tokens, embedding_dimension]
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -104,7 +104,9 @@ class CustomAttentionBlock(nn.Module):
             norm_layer=norm_layer,
         )
 
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.norm2 = norm_layer(dim)
@@ -114,7 +116,9 @@ class CustomAttentionBlock(nn.Module):
             act_layer=act_layer,
             drop=proj_drop,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor, attn_mask=None) -> torch.Tensor:
@@ -196,7 +200,9 @@ class RelPositionMultiHeadedAttention(nn.Module):
             self.attn = torch.softmax(scores, dim=-1)  # (batch, head, time1, time2)
         p_attn = self.dropout(self.attn)
         x = torch.matmul(p_attn, value)  # (batch, head, time1, d_k)
-        x = x.transpose(1, 2).contiguous().view(n_batch, -1, self.h * self.d_k)  # (batch, time1, d_model)
+        x = (
+            x.transpose(1, 2).contiguous().view(n_batch, -1, self.h * self.d_k)
+        )  # (batch, time1, d_model)
 
         return self.linear_out(x)  # (batch, time1, d_model)
 
@@ -211,7 +217,9 @@ class RelPositionMultiHeadedAttention(nn.Module):
         x_padded = torch.cat([zero_pad, x], dim=-1)
 
         x_padded = x_padded.view(*x.size()[:2], x.size(3) + 1, x.size(2))
-        x = x_padded[:, :, 1:].view_as(x)[:, :, :, : x.size(-1) // 2 + 1]  # only keep the positions from 0 to time2
+        x = x_padded[:, :, 1:].view_as(x)[
+            :, :, :, : x.size(-1) // 2 + 1
+        ]  # only keep the positions from 0 to time2
 
         if self.zero_triu:
             ones = torch.ones((x.size(2), x.size(3)), device=x.device)
@@ -256,7 +264,9 @@ class RelPositionMultiHeadedAttention(nn.Module):
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
         matrix_bd = self.rel_shift(matrix_bd)
 
-        scores = (matrix_ac + matrix_bd) / math.sqrt(self.d_k)  # (batch, head, time1, time2)
+        scores = (matrix_ac + matrix_bd) / math.sqrt(
+            self.d_k
+        )  # (batch, head, time1, time2)
 
         scores = self._forward_attention(v, scores, key_padding_mask)
         scores = scores.transpose(0, 1)

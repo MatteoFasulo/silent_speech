@@ -15,15 +15,19 @@ The EMG and audio data can be downloaded from <https://doi.org/10.5281/zenodo.40
 Force-aligned phonemes from the Montreal Forced Aligner have been included as a git submodule, which must be updated using the process described in "Environment Setup" below.
 Note that there will not be an exception if the directory is not found, but logged phoneme prediction accuracies reporting 100% is a sign that the directory has not been loaded correctly.
 
+```
+python download_data.py --output_dir $SCRATCH/datasets/Gaddy/
+```
+
 ## Environment Setup
 
-We strongly recommend running in Anaconda.
-To create a new environment with all required dependencies, run:
 ```
-conda env create -f environment.yml
-conda activate silent_speech
+uv venv -p 3.10 --relocatable --link-mode=copy .silentvenv
+source .silentvenv/bin/activate
+uv pip install --link-mode=copy torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+uv pip install --link-mode=copy absl-py numpy librosa pysoundfile matplotlib scipy numba unidecode tqdm jiwer==2.2.1 praat-textgrids noisereduce torchinfo tensorboard einops timm speechbrain h5py transformers 'huggingface_hub<1.0' omegaconf torch-tb-profiler pandas
+python -m compileall -j 64 -o 0 -o 1 -o 2 $SCRATCH/.silentvenv/lib/python3.10/site-packages/
 ```
-This will install with CUDA 11.8.
 
 You will also need to pull git submodules for Hifi-GAN and the phoneme alignment data, using the following commands:
 ```
@@ -40,7 +44,11 @@ curl -LO https://github.com/mozilla/DeepSpeech/releases/download/v0.7.0/deepspee
 
 (Optional) Training will be faster if you re-run the audio cleaning, which will save re-sampled audio so it doesn't have to be re-sampled every training run.
 ```
-python data_collection/clean_audio.py emg_data/nonparallel_data emg_data/silent_parallel_data emg_data/voiced_parallel_data
+python data_collection/clean_audio.py $SCRATCH/datasets/Gaddy/emg_data/nonparallel_data $SCRATCH/datasets/Gaddy/emg_data/silent_parallel_data $SCRATCH/datasets/Gaddy/emg_data/voiced_parallel_data
+```
+
+```
+python build_hdf5.py --output_file /capstor/scratch/cscs/mfasulo/datasets/Gaddy/h5/emg_dataset.h5
 ```
 
 ## Pre-trained Models

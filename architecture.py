@@ -1,15 +1,14 @@
-import sys
 import random
+import sys
 from typing import Optional
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from absl import flags
+from torch import nn
 from torchinfo import summary
 
 from transformer import TransformerEncoderLayer
-
-from absl import flags
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("img_size", 1600, "input image size")
@@ -117,6 +116,10 @@ if __name__ == "__main__":
     print(model)
     summary(
         model,
-        input_size=[(1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, 1)],
+        input_size=[
+            (1, FLAGS.img_size, FLAGS.in_chans),
+            (1, FLAGS.img_size, FLAGS.in_chans),
+            (1, FLAGS.img_size, 1),
+        ],
         depth=5,
     )

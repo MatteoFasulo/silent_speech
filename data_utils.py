@@ -1,19 +1,19 @@
 import string
 
-import numpy as np
-import librosa
-import soundfile as sf
-from textgrids import TextGrid
 import jiwer
+import librosa
+import matplotlib.pyplot as plt
+import numpy as np
+import soundfile as sf
+import torch
+from absl import flags
+from textgrids import TextGrid
 from unidecode import unidecode
 
-import torch
-import matplotlib.pyplot as plt
-
-from absl import flags
-
 FLAGS = flags.FLAGS
-flags.DEFINE_string("normalizers_file", "normalizers.pkl", "file with pickled feature normalizers")
+flags.DEFINE_string(
+    "normalizers_file", "normalizers.pkl", "file with pickled feature normalizers"
+)
 
 phoneme_inventory = [
     "aa",
@@ -91,7 +91,9 @@ mel_basis = {}
 hann_window = {}
 
 
-def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+def mel_spectrogram(
+    y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False
+):
     if torch.min(y) < -1.0:
         print("min value is ", torch.min(y))
     if torch.max(y) > 1.0:
@@ -99,12 +101,18 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
 
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa.filters.mel(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
-        mel_basis[str(fmax) + "_" + str(y.device)] = torch.from_numpy(mel).float().to(y.device)
+        mel = librosa.filters.mel(
+            sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax
+        )
+        mel_basis[str(fmax) + "_" + str(y.device)] = (
+            torch.from_numpy(mel).float().to(y.device)
+        )
         hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
 
     y = torch.nn.functional.pad(
-        y.unsqueeze(1), (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)), mode="reflect"
+        y.unsqueeze(1),
+        (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
+        mode="reflect",
     )
     y = y.squeeze(1)
 
@@ -129,7 +137,9 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     return spec
 
 
-def load_audio(filename, start=None, end=None, max_frames=None, renormalize_volume=False):
+def load_audio(
+    filename, start=None, end=None, max_frames=None, renormalize_volume=False
+):
     audio, r = sf.read(filename)
 
     if len(audio.shape) > 1:
@@ -143,9 +153,19 @@ def load_audio(filename, start=None, end=None, max_frames=None, renormalize_volu
         audio = librosa.resample(audio, orig_sr=16000, target_sr=22050)
     else:
         assert r == 22050
-    audio = np.clip(audio, -1, 1)  # because resampling sometimes pushes things out of range
+    audio = np.clip(
+        audio, -1, 1
+    )  # because resampling sometimes pushes things out of range
     pytorch_mspec = mel_spectrogram(
-        torch.tensor(audio, dtype=torch.float32).unsqueeze(0), 1024, 80, 22050, 256, 1024, 0, 8000, center=False
+        torch.tensor(audio, dtype=torch.float32).unsqueeze(0),
+        1024,
+        80,
+        22050,
+        256,
+        1024,
+        0,
+        8000,
+        center=False,
     )
     mspec = pytorch_mspec.squeeze(0).T.numpy()
     if max_frames is not None and mspec.shape[0] > max_frames:
@@ -175,11 +195,15 @@ def get_emg_features(emg_data, debug=False):
         p_w = np.squeeze(p_w, 0)
         p_r = librosa.feature.rms(y=r, frame_length=16, hop_length=6, center=False)
         p_r = np.squeeze(p_r, 0)
-        z_p = librosa.feature.zero_crossing_rate(p, frame_length=16, hop_length=6, center=False)
+        z_p = librosa.feature.zero_crossing_rate(
+            p, frame_length=16, hop_length=6, center=False
+        )
         z_p = np.squeeze(z_p, 0)
         r_h = librosa.util.frame(r, frame_length=16, hop_length=6).mean(axis=0)
 
-        s = abs(librosa.stft(np.ascontiguousarray(x), n_fft=16, hop_length=6, center=False))
+        s = abs(
+            librosa.stft(np.ascontiguousarray(x), n_fft=16, hop_length=6, center=False)
+        )
         # s has feature dimension first and time second
 
         if debug:
@@ -236,7 +260,10 @@ def combine_fixed_length(tensor_list, length):
         tensor_list = list(tensor_list)  # copy
         tensor_list.append(
             torch.zeros(
-                pad_length, *tensor_list[0].size()[1:], dtype=tensor_list[0].dtype, device=tensor_list[0].device
+                pad_length,
+                *tensor_list[0].size()[1:],
+                dtype=tensor_list[0].dtype,
+                device=tensor_list[0].device,
             )
         )
         total_length += pad_length
@@ -290,7 +317,12 @@ def print_confusion(confusion_mat, n=10):
         for p2 in range(p1):
             if p1 != p2:
                 aslist.append(
-                    ((confusion_mat[p1, p2] + confusion_mat[p2, p1]) / (target_counts[p1] + target_counts[p2]), p1, p2)
+                    (
+                        (confusion_mat[p1, p2] + confusion_mat[p2, p1])
+                        / (target_counts[p1] + target_counts[p2]),
+                        p1,
+                        p2,
+                    )
                 )
     aslist.sort()
     aslist = aslist[-n:]
@@ -332,8 +364,30 @@ def read_phonemes(textgrid_fname, max_len=None):
 def numToWords(num, join=True):
     """words = {} convert an integer number into words"""
     units = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
-    teens = ["", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
-    tens = ["", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+    teens = [
+        "",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ]
+    tens = [
+        "",
+        "ten",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+    ]
     thousands = [
         "",
         "thousand",
@@ -425,15 +479,17 @@ def applyCustomCorrections(sentence, replacement_dict):
 
 class TextTransform(object):
     def __init__(self):
-        self.transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
+        self.transformation = jiwer.Compose(
+            [jiwer.RemovePunctuation(), jiwer.ToLowerCase()]
+        )
         self.replacement_dict = {
-            "£250": "two hundred fifty pounds", 
+            "£250": "two hundred fifty pounds",
             "£1000": "one thousand pounds",
             "X.": "ten",
             "XIII.": "thirteen",
             "XII.": "twelve",
-            "IV.": "four"
-            }
+            "IV.": "four",
+        }
         self.chars = [x for x in string.ascii_lowercase + string.digits + "|"]
 
     def clean_text(self, text):

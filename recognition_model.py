@@ -1,24 +1,23 @@
+import logging
 import os
 import sys
 from datetime import datetime
-import numpy as np
-import logging
-from torchaudio.models.decoder import ctc_decoder
+
 import jiwer
-import tqdm
-
+import numpy as np
 import torch
-from torch import nn
 import torch.nn.functional as F
-from torchinfo import summary
-from torch.utils.tensorboard import SummaryWriter
-
-from hdf5_dataset import H5EmgDataset, SizeAwareSampler
-from adapted_emg_transformer import EMGTransformer
-#from architecture import Model as EMGTransformer
-from data_utils import combine_fixed_length, decollate_tensor
-
+import tqdm
 from absl import flags
+from torch import nn
+from torch.utils.tensorboard import SummaryWriter
+from torchaudio.models.decoder import ctc_decoder
+from torchinfo import summary
+
+from adapted_emg_transformer import EMGTransformer
+# from architecture import Model as EMGTransformer
+from data_utils import combine_fixed_length, decollate_tensor
+from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean("debug", False, "debug")
@@ -35,11 +34,16 @@ flags.DEFINE_integer("eval_interval", 5, "evaluate every n epochs")
 flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
 flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
 flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
-flags.DEFINE_string("lm_directory", "/users/mfasulo/silent_speech/KenLM/", "directory with language model files")
+flags.DEFINE_string("lm_directory", "KenLM", "directory with language model files")
 flags.DEFINE_boolean("verbose", False, "print verbose output")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 seq_len = 200
+task = "emg2text"
+writer = SummaryWriter(
+    log_dir=f"/capstor/scratch/cscs/mfasulo/outputs/finetuning/silent_speech/{task}/{run_id}"
+)
+
 
 def test(model, dset, device, beam_size: int = 150):
     model.eval()
@@ -55,7 +59,7 @@ def test(model, dset, device, beam_size: int = 150):
         lm_weight=2,  # default is 2; Gaddy sets to 1.85
         # word_score  = -3,
         # sil_score   = -2,
-        beam_size=beam_size
+        beam_size=beam_size,
     )
 
     dataloader = torch.utils.data.DataLoader(
@@ -110,14 +114,21 @@ def train_model(model, trainset, devset, device):
 
     n_chars = len(devset.text_transform.chars)
     if FLAGS.start_training_from is not None:
-        state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
-        state_dict = {k.replace('model.','') if k.startswith('model.') else k: v for k, v in state_dict.items()}
+        state_dict = torch.load(
+            FLAGS.start_training_from, map_location="cpu", weights_only=False
+        )["state_dict"]
+        state_dict = {
+            k.replace("model.", "") if k.startswith("model.") else k: v
+            for k, v in state_dict.items()
+        }
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
     optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
-    #lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
-    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', 0.5, patience=FLAGS.learning_rate_patience)
+    # lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
+    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optim, "min", 0.5, patience=FLAGS.learning_rate_patience
+    )
 
     def set_lr(new_lr):
         for param_group in optim.param_groups:
@@ -147,10 +158,14 @@ def train_model(model, trainset, devset, device):
             pred = nn.utils.rnn.pad_sequence(
                 decollate_tensor(pred, example["lengths"]), batch_first=False
             )  # seq first, as required by ctc
-            y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(device)
+            y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(
+                device
+            )
 
             # CTC loss
-            loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars)
+            loss = F.ctc_loss(
+                pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars
+            )
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
 
@@ -164,13 +179,20 @@ def train_model(model, trainset, devset, device):
         train_loss = np.mean(losses)
         if epoch_idx % FLAGS.eval_interval == 0:
             val = test(model, devset, device)
-            logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} validation WER: {val*100:.2f}")
+            logging.info(
+                f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} validation WER: {val*100:.2f}"
+            )
             if val < best_val_loss:
                 best_val_loss = val
-                torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "best_model.pt"))
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(FLAGS.output_directory, "best_model.pt"),
+                )
                 logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
-            logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed")
+            logging.info(
+                f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed"
+            )
 
         lr_sched.step(val)
         current_lr = optim.param_groups[0]["lr"]
@@ -180,7 +202,9 @@ def train_model(model, trainset, devset, device):
         torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "last.pt"))
 
     # re-load best parameters
-    model.load_state_dict(torch.load(os.path.join(FLAGS.output_directory, "best_model.pt")))  
+    model.load_state_dict(
+        torch.load(os.path.join(FLAGS.output_directory, "best_model.pt"))
+    )
 
     return model
 
@@ -193,10 +217,12 @@ def evaluate_saved():
     print(f"Unique silent flags in test set: {set(silent_flags)}")
     n_chars = len(testset.text_transform.chars)
     model = EMGTransformer(
-        testset.num_features, 
+        testset.num_features,
         n_chars + 1,
     ).to(device)
-    model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
+    model.load_state_dict(
+        torch.load(FLAGS.evaluate_saved, map_location=device), strict=True
+    )
     summary(
         model,
         input_data=[
@@ -210,7 +236,7 @@ def evaluate_saved():
     print("WER:", test_wer)
 
 
-def main():
+def main(seed: int = 42):
     log_filename = os.path.join(FLAGS.output_directory, f"log.txt")
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     logging.basicConfig(
@@ -221,9 +247,9 @@ def main():
 
     logging.info(sys.argv)
 
-    trainset = H5EmgDataset(dev=False, test=False)
-    devset = H5EmgDataset(dev=True)
-    testset = H5EmgDataset(test=True)
+    trainset = H5EmgDataset(dev=False, test=False, seed=seed)
+    devset = H5EmgDataset(dev=True, seed=seed)
+    testset = H5EmgDataset(test=True, seed=seed)
     logging.info("output example: %s", devset.example_indices[0])
     logging.info("train / dev split: %d %d", len(trainset), len(devset))
 
@@ -231,9 +257,7 @@ def main():
 
     n_chars = len(devset.text_transform.chars)
     model = EMGTransformer(
-        devset.num_features, 
-        n_chars + 1,
-        freeze_blocks=FLAGS.freeze_blocks
+        devset.num_features, n_chars + 1, freeze_blocks=FLAGS.freeze_blocks
     ).to(device)
     summary(
         model,
@@ -252,11 +276,10 @@ def main():
     writer.add_scalar("test/wer", test_wer, 0)
     return
 
+
 if __name__ == "__main__":
     FLAGS(sys.argv)
     if FLAGS.evaluate_saved is not None:
         evaluate_saved()
     else:
-        global writer
-        writer = SummaryWriter()
         main()

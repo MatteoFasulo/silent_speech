@@ -1,8 +1,8 @@
 from typing import Optional
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -212,7 +212,9 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         # During inference when previous states are cached
         if saved_state is not None and "prev_key" in saved_state:
             assert not self.unmasked, "This should only be for decoder attention"
-            length = saved_state["prev_key"].shape[-2] + 1  # `length - 1` keys are cached,
+            length = (
+                saved_state["prev_key"].shape[-2] + 1
+            )  # `length - 1` keys are cached,
             # `+ 1` for the current time step
             decoder_step = True
         else:
@@ -222,8 +224,12 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         used_embeddings = self.get_embeddings_for_query(length)
 
         values_embeddings = used_embeddings[..., 1] if self.add_to_values else None
-        positional_logits = self.calculate_positional_logits(query, used_embeddings[..., 0])
-        positional_logits = self.relative_to_absolute_indexing(positional_logits, decoder_step)
+        positional_logits = self.calculate_positional_logits(
+            query, used_embeddings[..., 0]
+        )
+        positional_logits = self.relative_to_absolute_indexing(
+            positional_logits, decoder_step
+        )
         return (positional_logits, values_embeddings)
 
     def get_embeddings_for_query(self, length):
@@ -242,11 +248,15 @@ class LearnedRelativePositionalEmbedding(nn.Module):
         start_pos = max(self.max_relative_pos - length, 0)
         if self.unmasked:
             with torch.no_grad():
-                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, pad_length))
+                padded_embeddings = nn.functional.pad(
+                    self.embeddings, (0, 0, 0, 0, pad_length, pad_length)
+                )
             used_embeddings = padded_embeddings.narrow(-3, start_pos, 2 * length - 1)
         else:
             with torch.no_grad():
-                padded_embeddings = nn.functional.pad(self.embeddings, (0, 0, 0, 0, pad_length, 0))
+                padded_embeddings = nn.functional.pad(
+                    self.embeddings, (0, 0, 0, 0, pad_length, 0)
+                )
             used_embeddings = padded_embeddings.narrow(-3, start_pos, length)
         return used_embeddings
 
@@ -271,7 +281,9 @@ class LearnedRelativePositionalEmbedding(nn.Module):
             positional_logits = torch.einsum("lbd,md->lbm", query, relative_embeddings)
         else:
             query = query.view(query.shape[0], -1, self.num_heads, self.embedding_dim)
-            positional_logits = torch.einsum("lbhd,hmd->lbhm", query, relative_embeddings)
+            positional_logits = torch.einsum(
+                "lbhd,hmd->lbhm", query, relative_embeddings
+            )
             positional_logits = positional_logits.contiguous().view(
                 positional_logits.shape[0], -1, positional_logits.shape[-1]
             )

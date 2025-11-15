@@ -1,13 +1,14 @@
 import time
-from matplotlib.animation import FuncAnimation
-import matplotlib.pyplot as plt
-import numpy as np
-import sounddevice as sd
-import scipy.signal
 
 import brainflow
-from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, IpProtocolType
-from brainflow.data_filter import DataFilter, FilterTypes, AggOperations
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.signal
+import sounddevice as sd
+from brainflow.board_shim import (BoardIds, BoardShim, BrainFlowInputParams,
+                                  IpProtocolType)
+from brainflow.data_filter import AggOperations, DataFilter, FilterTypes
+from matplotlib.animation import FuncAnimation
 
 
 def remove_drift(signal, fs):
@@ -51,7 +52,9 @@ def get_last_sequence(chunk_list, n, k, do_filtering, fs):
         result = filter_signal(result, fs)
 
     if result.shape[0] < n:
-        result_padded = np.concatenate([np.zeros((n - result.shape[0], result.shape[1])), result], 0)
+        result_padded = np.concatenate(
+            [np.zeros((n - result.shape[0], result.shape[1])), result], 0
+        )
     else:
         result_padded = result
     return result_padded
@@ -110,26 +113,52 @@ class Recorder(object):
             emg_ax.axis((0, window, -300, 300))
             audio_lines = audio_ax.plot(np.zeros(window * audio_multiplier))
             emg_lines = emg_ax.plot(np.zeros((window, len(self.emg_channels))))
-            for l, c in zip(emg_lines, ["grey", "mediumpurple", "blue", "green", "yellow", "orange", "red", "sienna"]):
+            for l, c in zip(
+                emg_lines,
+                [
+                    "grey",
+                    "mediumpurple",
+                    "blue",
+                    "green",
+                    "yellow",
+                    "orange",
+                    "red",
+                    "sienna",
+                ],
+            ):
                 l.set_color(c)
             text = emg_ax.text(50, -250, "RMS: 0")
 
             for ax in (audio_ax, emg_ax):
                 ax.set_yticks([0])
                 ax.yaxis.grid(True)
-                ax.tick_params(bottom=False, top=False, labelbottom=False, right=False, left=False, labelleft=False)
+                ax.tick_params(
+                    bottom=False,
+                    top=False,
+                    labelbottom=False,
+                    right=False,
+                    left=False,
+                    labelleft=False,
+                )
             fig.tight_layout(pad=0)
 
             def update_plot(frame):
                 """This is called by matplotlib for each plot update."""
-                audio_to_plot = get_last_sequence(self.audio_data, window * audio_multiplier, 1, False, sample_rate)
+                audio_to_plot = get_last_sequence(
+                    self.audio_data, window * audio_multiplier, 1, False, sample_rate
+                )
                 audio_to_plot = audio_to_plot.squeeze(1)
                 audio_lines[0].set_ydata(audio_to_plot)
 
-                emg_to_plot = get_last_sequence(self.emg_data, window, len(self.emg_channels), True, sample_rate)
+                emg_to_plot = get_last_sequence(
+                    self.emg_data, window, len(self.emg_channels), True, sample_rate
+                )
                 for column, line in enumerate(emg_lines):
                     line.set_ydata(emg_to_plot[:, column])
-                text.set_text("RMS: " + str(emg_to_plot[-sample_rate * 2 : -sample_rate // 2].std()))
+                text.set_text(
+                    "RMS: "
+                    + str(emg_to_plot[-sample_rate * 2 : -sample_rate // 2].std())
+                )
                 return audio_lines + emg_lines
 
             self.ani = FuncAnimation(fig, update_plot, interval=30)
@@ -152,12 +181,17 @@ class Recorder(object):
             current_audio.append(data)
         if len(current_audio) > 0:
             self.audio_data.append(np.concatenate(current_audio, 0))
-            data = self.board.get_board_data()  # get all data and remove it from internal buffer
+            data = (
+                self.board.get_board_data()
+            )  # get all data and remove it from internal buffer
             self.emg_data.append(data[self.emg_channels, :].T)
 
             if not self.debug:
                 for sn in data[0, :]:
-                    if self.previous_sample_number != -1 and sn != (self.previous_sample_number + 1) % 256:
+                    if (
+                        self.previous_sample_number != -1
+                        and sn != (self.previous_sample_number + 1) % 256
+                    ):
                         print(f"skip from {self.previous_sample_number} to {sn}")
                     self.previous_sample_number = sn
 
@@ -172,7 +206,8 @@ class Recorder(object):
         audio = np.concatenate(self.audio_data, 0).squeeze(1)
         button = np.concatenate(self.button_data, 0)
         chunk_sizes = [
-            (e.shape[0], a.shape[0], b.shape[0]) for e, a, b in zip(self.emg_data, self.audio_data, self.button_data)
+            (e.shape[0], a.shape[0], b.shape[0])
+            for e, a, b in zip(self.emg_data, self.audio_data, self.button_data)
         ]
         self.emg_data = []
         self.audio_data = []

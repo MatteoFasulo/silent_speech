@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,16 +19,24 @@ class WaveformAugment(nn.Module):
         augment_mask = torch.rand(batch_size, num_channels, 1) < self.augment_prob
 
         # Generate random mask lengths
-        mask_lengths = torch.randint(1, self.signal_mask_param + 1, (batch_size, num_channels, 1))
+        mask_lengths = torch.randint(
+            1, self.signal_mask_param + 1, (batch_size, num_channels, 1)
+        )
 
         # Generate random start positions
-        start_positions = torch.randint(0, signal_length + 1 - self.signal_mask_param, (batch_size, num_channels, 1))
+        start_positions = torch.randint(
+            0, signal_length + 1 - self.signal_mask_param, (batch_size, num_channels, 1)
+        )
 
         # Create a range tensor
-        range_tensor = torch.arange(signal_length).expand(batch_size, num_channels, signal_length)
+        range_tensor = torch.arange(signal_length).expand(
+            batch_size, num_channels, signal_length
+        )
 
         # Create the mask
-        mask = (range_tensor < start_positions + mask_lengths) & (range_tensor >= start_positions)
+        mask = (range_tensor < start_positions + mask_lengths) & (
+            range_tensor >= start_positions
+        )
 
         # Invert and cast the mask to float
         mask = (~mask).float()
@@ -69,7 +78,9 @@ class WhiteNoiseAugment(nn.Module):
         white_noise = torch.randn_like(x) * self.noise_level
 
         # Create a mask for whether to apply augmentation to each channel
-        augment_mask = (torch.rand(batch_size, num_channels, 1) < self.augment_prob).to(x.device)
+        augment_mask = (torch.rand(batch_size, num_channels, 1) < self.augment_prob).to(
+            x.device
+        )
 
         # Apply the augmentation
         augmented = x + white_noise * augment_mask
@@ -121,17 +132,23 @@ class SalientTimeMasking(nn.Module):
         except RuntimeError:
             # can happen if probabilities are all zero (silent input)
             # fall back to random uniform sampling.
-            mask_start_indices = torch.randint(0, num_steps, (batch_size, self.num_masks), device=x.device)
+            mask_start_indices = torch.randint(
+                0, num_steps, (batch_size, self.num_masks), device=x.device
+            )
 
         # Create and Apply the Mask
         x_aug = x.clone()
         for i in range(self.num_masks):
             starts = mask_start_indices[:, i]  # Shape: (Batch,)
-            time_range = torch.arange(num_steps, device=x.device).unsqueeze(0)  # Shape: (1, Time)
+            time_range = torch.arange(num_steps, device=x.device).unsqueeze(
+                0
+            )  # Shape: (1, Time)
 
             # boolean mask for each item in the batch
             # Shape: (Batch, Time)
-            current_mask = (time_range >= starts.unsqueeze(1)) & (time_range < (starts + self.mask_len).unsqueeze(1))
+            current_mask = (time_range >= starts.unsqueeze(1)) & (
+                time_range < (starts + self.mask_len).unsqueeze(1)
+            )
 
             # Apply the mask, values to zero
             x_aug = x_aug.masked_fill(current_mask.unsqueeze(-1), 0.0)

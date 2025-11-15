@@ -1,15 +1,14 @@
-import sys
-import os
-import textwrap
 import curses
-import soundfile as sf
 import json
-import numpy as np
+import os
+import sys
+import textwrap
 
+import numpy as np
+import soundfile as sf
+from absl import flags
 from read_book import Book
 from record_data import Recorder
-
-from absl import flags
 
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean("debug", False, "debug")
@@ -52,7 +51,9 @@ def save_data(output_idx, data, book):
         t = book.current_sentence()
 
     with open(info_file, "w") as f:
-        json.dump({"book": bf, "sentence_index": bi, "text": t, "chunks": chunk_info}, f)
+        json.dump(
+            {"book": bf, "sentence_index": bi, "text": t, "chunks": chunk_info}, f
+        )
 
 
 def get_ends(data):
@@ -62,7 +63,12 @@ def get_ends(data):
     dummy_audio = np.zeros(8000)
     dummy_button = np.zeros(500, dtype=np.bool)
     chunk_info = [(500, 8000, 500)]
-    return (emg_start, dummy_audio, dummy_button, chunk_info), (emg_end, dummy_audio, dummy_button, chunk_info)
+    return (emg_start, dummy_audio, dummy_button, chunk_info), (
+        emg_end,
+        dummy_audio,
+        dummy_button,
+        chunk_info,
+    )
 
 
 def main(stdscr):
@@ -89,7 +95,11 @@ def main(stdscr):
                     # keypress
                     recording = True
                     r.get_data()  # clear data
-                    stdscr.addstr(curses.LINES - 1, 0, "Type 'q' to quit, 'n' or ' ' for next, 'r' to restart segment")
+                    stdscr.addstr(
+                        curses.LINES - 1,
+                        0,
+                        "Type 'q' to quit, 'n' or ' ' for next, 'r' to restart segment",
+                    )
                     display_sentence("<silence>", text_win)
                     stdscr.refresh()
             else:

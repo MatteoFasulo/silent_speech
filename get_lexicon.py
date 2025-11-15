@@ -1,10 +1,11 @@
 # build the lexicon from the dataset
 import sys
-import tqdm
-from hdf5_dataset import H5EmgDataset
-from data_utils import TextTransform
 
+import tqdm
 from absl import flags
+
+from data_utils import TextTransform
+from hdf5_dataset import H5EmgDataset
 
 FLAGS = flags.FLAGS
 
@@ -41,4 +42,6 @@ if __name__ == "__main__":
     merged_unigram = train_unigram | dev_unigram | test_unigram
 
     get_lexicon(merged_unigram)
-    print(f"Lexicon saved to gaddy_lexicon.txt with {len(merged_unigram)} unique words.")
+    print(
+        f"Lexicon saved to gaddy_lexicon.txt with {len(merged_unigram)} unique words."
+    )

@@ -1,21 +1,22 @@
-import sys
-import os
 import logging
+import os
+import random
+import sys
 
-import tqdm
-
+import numpy as np
 import torch
+import tqdm
+from absl import flags
 from torch import nn
 
 from adapted_emg_transformer import EMGTransformer
-#from architecture import Model as EMGTransformer
-from transduction_model import test, save_output
-from hdf5_dataset import H5EmgDataset
 from asr_evaluation import evaluate
 from data_utils import phoneme_inventory, print_confusion
-from vocoder import Vocoder
+from hdf5_dataset import H5EmgDataset
 
-from absl import flags
+# from architecture import Model as EMGTransformer
+from transduction_model import save_output, test
+from vocoder import Vocoder
 
 FLAGS = flags.FLAGS
 flags.DEFINE_list("models", [], "identifiers of models to evaluate")
@@ -41,7 +42,9 @@ def main():
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(os.path.join(FLAGS.output_directory, "eval_log.txt"), "w"),
+            logging.FileHandler(
+                os.path.join(FLAGS.output_directory, "eval_log.txt"), "w"
+            ),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
@@ -56,12 +59,16 @@ def main():
     models = []
     for fname in FLAGS.models:
         state_dict = torch.load(fname)
-        model = EMGTransformer(testset.num_features, testset.num_speech_features, len(phoneme_inventory)).to(device)
+        model = EMGTransformer(
+            testset.num_features, testset.num_speech_features, len(phoneme_inventory)
+        ).to(device)
         model.load_state_dict(state_dict, strict=True)  # Ensure all keys match
         models.append(model)
     ensemble = EnsembleModel(models)
 
     _, _, confusion = test(ensemble, testset, device)
+    # Save the confusion matrix
+    np.save(os.path.join(FLAGS.output_directory, "confusion_matrix.npy"), confusion)
     print_confusion(confusion)
 
     vocoder = Vocoder()
@@ -81,4 +88,8 @@ def main():
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
+    torch.manual_seed(FLAGS.seed)
+    torch.cuda.manual_seed(FLAGS.seed)
+    random.seed(FLAGS.seed)
+    np.random.seed(FLAGS.seed)
     main()

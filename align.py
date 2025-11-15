@@ -1,5 +1,5 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from numba import jit
 
 
@@ -11,7 +11,9 @@ def time_warp(costs):
     eps = 1e-4
     for i in range(1, costs.shape[0]):
         for j in range(1, costs.shape[1]):
-            dtw[i, j] = costs[i, j] + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
+            dtw[i, j] = costs[i, j] + min(
+                dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1]
+            )
     return dtw
 
 
@@ -25,7 +27,9 @@ def align_from_distances(distance_matrix, debug=False):
     results = [0] * distance_matrix.shape[0]
     while i > 0 and j > 0:
         results[i] = j
-        i, j = min([(i - 1, j), (i, j - 1), (i - 1, j - 1)], key=lambda x: dtw[x[0], x[1]])
+        i, j = min(
+            [(i - 1, j), (i, j - 1), (i - 1, j - 1)], key=lambda x: dtw[x[0], x[1]]
+        )
 
     if debug:
         visual = np.zeros_like(dtw)

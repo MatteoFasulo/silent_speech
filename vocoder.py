@@ -1,18 +1,20 @@
-import os
 import json
+import os
 import sys
-import numpy as np
 
+import numpy as np
 import torch
 
 sys.path.append("./hifi_gan")
+from absl import flags
 from env import AttrDict
+
 from models import Generator
 
-from absl import flags
-
 FLAGS = flags.FLAGS
-flags.DEFINE_string("hifigan_checkpoint", None, "filename of hifi-gan generator checkpoint")
+flags.DEFINE_string(
+    "hifigan_checkpoint", None, "filename of hifi-gan generator checkpoint"
+)
 
 
 class Vocoder(object):

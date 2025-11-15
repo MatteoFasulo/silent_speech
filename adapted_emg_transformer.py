@@ -1,19 +1,18 @@
-import sys
-import os
 import math
+import os
 import random
+import sys
 from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchinfo import summary
+from absl import flags
 from einops import rearrange
-from timm.layers import use_fused_attn, trunc_normal_
+from timm.layers import trunc_normal_, use_fused_attn
+from torchinfo import summary
 
 from transformer import LearnedRelativePositionalEmbedding
-
-from absl import flags
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("img_size", 1600, "input image size")
@@ -24,6 +23,7 @@ flags.DEFINE_integer("num_layers", 8, "number of layers")
 flags.DEFINE_integer("downsample_factor", 8, "downsample factor")
 flags.DEFINE_float("mlp_ratio", 4.0, "MLP ratio")
 flags.DEFINE_float("dropout", 0.1, "dropout")
+
 
 class ResBlock(nn.Module):
     def __init__(
@@ -70,6 +70,7 @@ class ResBlock(nn.Module):
             return x + res
         else:
             return self.act(x + res)
+
 
 # https://docs.pytorch.org/torchtune/stable/_modules/torchtune/modules/position_embeddings.html#RotaryPositionalEmbeddings
 class RotaryPositionalEmbeddings(nn.Module):
@@ -183,10 +184,12 @@ class RotaryPositionalEmbeddings(nn.Module):
         x_out = x_out.flatten(3)
         return x_out.type_as(x)
 
+
 class LRPEAttention(nn.Module):
     """
     Multi Head Attention with Learned Relative Positional Encoding (LRPE) applied to the logits.
     """
+
     def __init__(
         self,
         dim,
@@ -218,7 +221,9 @@ class LRPEAttention(nn.Module):
           A single tensor containing the output from this layer
         """
         B, N, D = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x).reshape(B, N, 3, self.num_heads, self.hd).permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
 
         # [B, n_h, N, h_d]
@@ -226,7 +231,7 @@ class LRPEAttention(nn.Module):
         logits = q @ k.transpose(-2, -1) * scale_factor
 
         # q shape: [B, n_h, N, h_d]
-        q_pos = q.permute(0, 2, 1, 3) # [B, N, n_h, h_d]
+        q_pos = q.permute(0, 2, 1, 3)  # [B, N, n_h, h_d]
         b, l, h, d = q_pos.size()
         # The forward pass of relative_positional expects (length, batch*heads, embed_dim)
         position_logits, _ = self.relative_positional(q_pos.reshape(l, b * h, d))
@@ -241,6 +246,7 @@ class LRPEAttention(nn.Module):
         out = self.proj(out)
 
         return out
+
 
 class Mlp(nn.Module):
     def __init__(
@@ -307,6 +313,7 @@ class CustomAttentionBlock(nn.Module):
         src = self.norm2(src)
         return src
 
+
 class EMGTransformer(nn.Module):
     def __init__(
         self,
@@ -323,7 +330,7 @@ class EMGTransformer(nn.Module):
         proj_drop: float = 0.1,
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
-        freeze_blocks: bool = False
+        freeze_blocks: bool = False,
     ):
         super().__init__()
 
@@ -374,7 +381,7 @@ class EMGTransformer(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
+            trunc_normal_(m.weight, std=0.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -388,9 +395,9 @@ class EMGTransformer(nn.Module):
                 x_raw[:, -r:, :] = 0
 
         x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
-        x_raw = self.conv_blocks(x_raw) # N B D
-        x_raw = x_raw.transpose(1, 2) # B N D
-        x_raw = self.w_raw_in(x_raw) # B N D
+        x_raw = self.conv_blocks(x_raw)  # N B D
+        x_raw = x_raw.transpose(1, 2)  # B N D
+        x_raw = self.w_raw_in(x_raw)  # B N D
 
         x = x_raw
         for blk in self.blocks:
@@ -400,6 +407,7 @@ class EMGTransformer(nn.Module):
             return self.w_out(x), self.w_aux(x)
         else:
             return self.w_out(x)
+
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
@@ -412,11 +420,20 @@ if __name__ == "__main__":
     )
     print("Model", new)
 
-    state_dict = torch.load(pretrained_path, map_location="cpu", weights_only=False)["state_dict"]
-    state_dict = {k.replace('model.','') if k.startswith('model.') else k: v for k, v in state_dict.items()}
+    state_dict = torch.load(pretrained_path, map_location="cpu", weights_only=False)[
+        "state_dict"
+    ]
+    state_dict = {
+        k.replace("model.", "") if k.startswith("model.") else k: v
+        for k, v in state_dict.items()
+    }
     new.load_state_dict(state_dict, strict=False)
     summary(
         new,
-        input_size=[(1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, FLAGS.in_chans), (1, FLAGS.img_size, 1)],
+        input_size=[
+            (1, FLAGS.img_size, FLAGS.in_chans),
+            (1, FLAGS.img_size, FLAGS.in_chans),
+            (1, FLAGS.img_size, 1),
+        ],
         depth=10,
     )

@@ -1,13 +1,17 @@
-import os, json
+import json
+import os
 import sys
+from pathlib import Path
+
 import h5py
 import numpy as np
 import scipy
-from tqdm import tqdm
-from joblib import Parallel, delayed
-from data_utils import load_audio, get_emg_features, read_phonemes, phoneme_inventory
-
 from absl import flags
+from joblib import Parallel, delayed
+from tqdm import tqdm
+
+from data_utils import (get_emg_features, load_audio, phoneme_inventory,
+                        read_phonemes)
 
 FLAGS = flags.FLAGS
 # flags.DEFINE_list('remove_channels', [], 'channels to remove')
@@ -24,8 +28,13 @@ flags.DEFINE_list(
     ],
     "voiced data locations",
 )
-flags.DEFINE_string("testset_file", "testset_largedev.json", "file with testset indices")
-flags.DEFINE_string("text_align_directory", "text_alignments", "directory with alignment files")
+flags.DEFINE_string(
+    "testset_file", "testset_largedev.json", "file with testset indices"
+)
+flags.DEFINE_string(
+    "text_align_directory", "text_alignments", "directory with alignment files"
+)
+flags.DEFINE_string("output_file", "emg_dataset.h5", "output HDF5 file name")
 
 
 def remove_drift(signal, fs):
@@ -58,7 +67,9 @@ def apply_to_all(function, signal_array, *args, **kwargs):
     return np.stack(results, 1)
 
 
-def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_directory=None):
+def load_utterance(
+    base_dir, index, limit_length=False, debug=False, text_align_directory=None
+):
     index = int(index)
     raw_emg = np.load(os.path.join(base_dir, f"{index}_emg.npy"))
     before = os.path.join(base_dir, f"{index-1}_emg.npy")
@@ -106,7 +117,9 @@ def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_
     if os.path.exists(tg_fname):
         phonemes = read_phonemes(tg_fname, mfccs.shape[0])
     else:
-        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index("sil")
+        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index(
+            "sil"
+        )
 
     return (
         mfccs,
@@ -160,7 +173,9 @@ def main():
             tasks.append(("voiced", os.path.join(vd, sess)))
 
     # 2) parallel load into Python structures
-    all_records = Parallel(n_jobs=24, verbose=1)(delayed(gather_utterance_records)(mode, d) for mode, d in tasks)
+    all_records = Parallel(n_jobs=24, verbose=1)(
+        delayed(gather_utterance_records)(mode, d) for mode, d in tasks
+    )
     # flatten list of lists
     all_records = [r for rec_list in all_records for r in rec_list]
     print(f"Loaded {len(all_records)} utterances into RAM.")
@@ -207,9 +222,13 @@ def main():
             # If it's a silent utterance, also save the parallel data
             if rec["silent"] and "parallel_voiced_audio_features" in rec:
                 utt_grp.create_dataset(
-                    "parallel_voiced_audio_features", data=rec["parallel_voiced_audio_features"], chunks=True
+                    "parallel_voiced_audio_features",
+                    data=rec["parallel_voiced_audio_features"],
+                    chunks=True,
                 )
-                utt_grp.create_dataset("parallel_voiced_emg", data=rec["parallel_voiced_emg"], chunks=True)
+                utt_grp.create_dataset(
+                    "parallel_voiced_emg", data=rec["parallel_voiced_emg"], chunks=True
+                )
 
             utt_grp.attrs["text"] = rec["text"]
             utt_grp.attrs["book"] = rec["book"]
@@ -221,11 +240,10 @@ def main():
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
-
-    # point this at the same directories you use now
     SILENT_DIRS = FLAGS.silent_data_directories
     VOICED_DIRS = FLAGS.voiced_data_directories
     TEXT_ALIGN_DIR = FLAGS.text_align_directory
-    OUT_FILE = "emg_dataset.h5"
-
+    out_path = Path(FLAGS.output_file).absolute()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    OUT_FILE = str(out_path)
     main()
