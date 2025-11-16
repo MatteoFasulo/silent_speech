@@ -35,7 +35,7 @@ def evaluate(testset, audio_directory):
                 del predictions[i]
 
         for i in range(len(targets)):
-            logging.info(f"Target: {targets[i]}")
-            logging.info(f"Prediction: {predictions[i]}")
-            logging.info(f"---" * 50)
-        logging.info(f"wer: {jiwer.wer(targets, predictions)}")
+            logging.debug(f"Target: {targets[i]}")
+            logging.debug(f"Prediction: {predictions[i]}")
+            logging.debug(f"---" * 50)
+        logging.info(f"WER: {jiwer.wer(targets, predictions)}")

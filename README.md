@@ -60,17 +60,25 @@ Pre-trained models for the vocoder and transduction model are available at
 
 To train an EMG to speech feature transduction model, use
 ```
-python transduction_model.py --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory "./models/transduction_model/"
+python transduction_model.py --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory "./models/transduction_model/" --start_training_from /capstor/scratch/cscs/mfasulo/checkpoints/pretraining/20@rope@gelu/20@rope@gelu-epoch=49-val_loss=0.0091.ckpt --seed 42
 ```
 where `hifigan_finetuned/checkpoint` is a trained HiFi-GAN generator model (optional).
 At the end of training, an ASR evaluation will be run on the validation set if a HiFi-GAN model is provided.
 
 To evaluate a model on the test set, use
 ```
-python evaluate.py --models ./models/transduction_model/model.pt --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory evaluation_output
+python evaluate.py --models ./models/transduction_model/model.pt --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory evaluation_output --testset_file testset_origdev.json
 ```
 
-By default, the scripts now use a larger validation set than was used in the original EMNLP 2020 paper, since the small size of the original set gave WER evaluations a high variance.  If you want to use the original validation set you can add the flag `--testset_file testset_origdev.json`.
+Or to evaluate all the models in a directory, use
+```bash
+sh eval.sh ./models/transduction_model wer_results.csv
+```
+
+And to report mean and std dev of WER results from the resulting CSV file, use the following one-liner:
+```python
+python -c "import pandas as pd; df=pd.read_csv('wer_results.csv'); df['wer'] = pd.to_numeric(df['wer'], errors='coerce'); sliced_df=df[df['model'].str.contains('last')].dropna(); print(sliced_df); print(f'\nMean WER: {sliced_df[\"wer\"].mean():.4f}\nStd WER: {sliced_df[\"wer\"].std():.4f}')"
+```
 
 ## HiFi-GAN Training
 
@@ -81,6 +89,11 @@ python make_vocoder_trainset.py --model ./models/transduction_model/model.pt --o
 The resulting files can be used for fine-tuning using the instructions in the hifi-gan repository.
 The pre-trained model was fine-tuned for 75,000 steps, starting from the `UNIVERSAL_V1` model provided by the HiFi-GAN repository.
 Although the HiFi-GAN is technically fine-tuned for the output of a specific transduction model, we found it to transfer quite well and shared a single HiFi-GAN for most experiments.
+
+```
+cd hifi_gan
+python train.py --fine_tuning True --config config_v1.json --input_wavs_dir ../hifigan_training_files/wavs --input_mels_dir ../hifigan_training_files/mels --input_training_file ../hifigan_training_files/train_filelist.txt --input_validation_file ../hifigan_training_files/dev_filelist.txt
+```
 
 # Silent Speech Recognition
 

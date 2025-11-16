@@ -26,23 +26,23 @@ from data_utils import (
 )
 
 FLAGS = flags.FLAGS
-flags.DEFINE_list("remove_channels", [], "channels to remove")
-flags.DEFINE_list(
-    "silent_data_directories",
-    ["/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/"],
-    "silent data locations",
-)
-flags.DEFINE_list(
-    "voiced_data_directories",
-    [
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/",
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/",
-    ],
-    "voiced data locations",
-)
-flags.DEFINE_string(
-    "testset_file", "testset_largedev.json", "file with testset indices"
-)
+# flags.DEFINE_list("remove_channels", [], "channels to remove")
+# flags.DEFINE_list(
+#    "silent_data_directories",
+#    ["/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/"],
+#    "silent data locations",
+# )
+# flags.DEFINE_list(
+#    "voiced_data_directories",
+#    [
+#        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/",
+#        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/",
+#    ],
+#    "voiced data locations",
+# )
+# flags.DEFINE_string(
+#    "testset_file", "testset_largedev.json", "file with testset indices"
+# )
 flags.DEFINE_string(
     "text_align_directory", "text_alignments", "directory with alignment files"
 )
@@ -204,7 +204,6 @@ class EMGDataset(torch.utils.data.Dataset):
         test=False,
         no_testset=False,
         no_normalizers=False,
-        seed: int = 42,
     ):
 
         self.text_align_directory = FLAGS.text_align_directory

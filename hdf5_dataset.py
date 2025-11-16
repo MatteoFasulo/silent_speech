@@ -225,6 +225,7 @@ class H5EmgDataset(Dataset):
             sample["parallel_voiced_audio_features"] = torch.from_numpy(voiced_mfccs)
             sample["parallel_voiced_emg"] = torch.from_numpy(voiced_emg)
 
+        sample["audio_file"] = os.path.join(d.directory, f"{utt}_audio_resampled.flac")
         return sample
 
     @staticmethod

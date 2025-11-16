@@ -37,6 +37,7 @@ flags.DEFINE_float("l2", 1e-7, "weight decay")
 flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
 flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("output_directory", "output", "output directory")
+flags.DEFINE_string("log_directory", "logs", "log directory")
 flags.DEFINE_integer("seed", 42, "random seed for data splitting")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -357,10 +358,13 @@ def train_model(
 
 
 def main():
+    os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(os.path.join(FLAGS.output_directory, "log.txt"), "w"),
+            logging.FileHandler(
+                os.path.join(FLAGS.log_directory, f"train_{run_id}.log")
+            ),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
