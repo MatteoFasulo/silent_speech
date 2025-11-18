@@ -25,7 +25,7 @@ python download_data.py --output_dir $SCRATCH/datasets/Gaddy/
 uv venv -p 3.10 --relocatable --link-mode=copy .silentvenv
 source .silentvenv/bin/activate
 uv pip install --link-mode=copy torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
-uv pip install --link-mode=copy absl-py numpy librosa pysoundfile matplotlib scipy numba unidecode tqdm jiwer==2.2.1 praat-textgrids noisereduce torchinfo tensorboard einops timm speechbrain h5py transformers 'huggingface_hub<1.0' omegaconf torch-tb-profiler pandas
+uv pip install --link-mode=copy absl-py numpy librosa pysoundfile matplotlib scipy numba unidecode tqdm jiwer==2.2.1 praat-textgrids noisereduce torchinfo tensorboard einops timm speechbrain h5py transformers 'huggingface_hub<1.0' omegaconf torch-tb-profiler pandas flashlight-text KenLM
 python -m compileall -j 64 -o 0 -o 1 -o 2 $SCRATCH/.silentvenv/lib/python3.10/site-packages/
 ```
 

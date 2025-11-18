@@ -29,5 +29,3 @@ repos:
     hooks:
       - id: uv-lock
         name: uv (check formatting against lock file)
-      - id: uv-export
-        name: uv (export dependencies to lock file)

@@ -363,7 +363,7 @@ def main():
     logging.basicConfig(
         handlers=[
             logging.FileHandler(
-                os.path.join(FLAGS.log_directory, f"train_{run_id}.log")
+                os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")
             ),
             logging.StreamHandler(),
         ],

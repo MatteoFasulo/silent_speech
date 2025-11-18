@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import sys
 from datetime import datetime
 
@@ -10,11 +11,12 @@ import torch.nn.functional as F
 import tqdm
 from absl import flags
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from torchaudio.models.decoder import ctc_decoder
 from torchinfo import summary
 
 from adapted_emg_transformer import EMGTransformer
+
 # from architecture import Model as EMGTransformer
 from data_utils import combine_fixed_length, decollate_tensor
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
@@ -36,13 +38,12 @@ flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
 flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("lm_directory", "KenLM", "directory with language model files")
 flags.DEFINE_boolean("verbose", False, "print verbose output")
+flags.DEFINE_string("log_directory", "logs", "log directory")
+flags.DEFINE_integer("seed", 42, "random seed for data splitting")
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 seq_len = 200
 task = "emg2text"
-writer = SummaryWriter(
-    log_dir=f"/capstor/scratch/cscs/mfasulo/outputs/finetuning/silent_speech/{task}/{run_id}"
-)
 
 
 def test(model, dset, device, beam_size: int = 150):
@@ -186,7 +187,7 @@ def train_model(model, trainset, devset, device):
                 best_val_loss = val
                 torch.save(
                     model.state_dict(),
-                    os.path.join(FLAGS.output_directory, "best_model.pt"),
+                    os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"),
                 )
                 logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
@@ -199,11 +200,14 @@ def train_model(model, trainset, devset, device):
         writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
         writer.add_scalar("train/lr", current_lr, epoch_idx)
         writer.add_scalar("val/wer", val, epoch_idx)
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "last.pt"))
+        torch.save(
+            model.state_dict(),
+            os.path.join(FLAGS.output_directory, f"model_{run_id}_last.pt"),
+        )
 
     # re-load best parameters
     model.load_state_dict(
-        torch.load(os.path.join(FLAGS.output_directory, "best_model.pt"))
+        torch.load(os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"))
     )
 
     return model
@@ -236,20 +240,25 @@ def evaluate_saved():
     print("WER:", test_wer)
 
 
-def main(seed: int = 42):
-    log_filename = os.path.join(FLAGS.output_directory, f"log.txt")
+def main():
+    os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     logging.basicConfig(
-        handlers=[logging.FileHandler(log_filename, "w"), logging.StreamHandler()],
+        handlers=[
+            logging.FileHandler(
+                os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")
+            ),
+            logging.StreamHandler(),
+        ],
         level=logging.INFO,
         format="%(message)s",
     )
 
     logging.info(sys.argv)
 
-    trainset = H5EmgDataset(dev=False, test=False, seed=seed)
-    devset = H5EmgDataset(dev=True, seed=seed)
-    testset = H5EmgDataset(test=True, seed=seed)
+    trainset = H5EmgDataset(dev=False, test=False)
+    devset = H5EmgDataset(dev=True)
+    testset = H5EmgDataset(test=True)
     logging.info("output example: %s", devset.example_indices[0])
     logging.info("train / dev split: %d %d", len(trainset), len(devset))
 
@@ -279,6 +288,13 @@ def main(seed: int = 42):
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
+    torch.manual_seed(FLAGS.seed)
+    torch.cuda.manual_seed(FLAGS.seed)
+    random.seed(FLAGS.seed)
+    np.random.seed(FLAGS.seed)
+    writer = SummaryWriter(
+        log_dir=f"/capstor/scratch/cscs/mfasulo/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
+    )
     if FLAGS.evaluate_saved is not None:
         evaluate_saved()
     else:
