@@ -8,9 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags
-from einops import rearrange
-from timm.layers import trunc_normal_, use_fused_attn
-from torchinfo import summary
+from timm.layers import trunc_normal_
 
 from transformer import LearnedRelativePositionalEmbedding
 
@@ -407,33 +405,3 @@ class EMGTransformer(nn.Module):
             return self.w_out(x), self.w_aux(x)
         else:
             return self.w_out(x)
-
-
-if __name__ == "__main__":
-    FLAGS(sys.argv)
-    # load pretrained weights if available
-    pretrained_path = "/capstor/scratch/cscs/mfasulo/checkpoints/finetuning/epn612/pretrained/full_finetune/run_20250808_111335/checkpoints/new_epn612_pretrained_full_finetune-epoch=39-val_loss=0.4665.ckpt"
-    new = EMGTransformer(
-        num_features=None,
-        num_outs=38,
-        num_aux_outs=None,
-    )
-    print("Model", new)
-
-    state_dict = torch.load(pretrained_path, map_location="cpu", weights_only=False)[
-        "state_dict"
-    ]
-    state_dict = {
-        k.replace("model.", "") if k.startswith("model.") else k: v
-        for k, v in state_dict.items()
-    }
-    new.load_state_dict(state_dict, strict=False)
-    summary(
-        new,
-        input_size=[
-            (1, FLAGS.img_size, FLAGS.in_chans),
-            (1, FLAGS.img_size, FLAGS.in_chans),
-            (1, FLAGS.img_size, 1),
-        ],
-        depth=10,
-    )
