@@ -1,9 +1,8 @@
 import math
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from pos_embedding import RotaryEmbedding
 from timm.layers import DropPath, LayerScale, Mlp
 

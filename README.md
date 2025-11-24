@@ -48,7 +48,7 @@ python data_collection/clean_audio.py $SCRATCH/datasets/Gaddy/emg_data/nonparall
 ```
 
 ```
-python build_hdf5.py --output_file /capstor/scratch/cscs/mfasulo/datasets/Gaddy/h5/emg_dataset.h5
+python build_hdf5.py --output_file /usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/h5/emg_dataset.h5
 ```
 
 ## Pre-trained Models
@@ -60,7 +60,7 @@ Pre-trained models for the vocoder and transduction model are available at
 
 To train an EMG to speech feature transduction model, use
 ```
-python transduction_model.py --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory "./models/transduction_model/" --start_training_from /capstor/scratch/cscs/mfasulo/checkpoints/pretraining/20@rope@gelu/20@rope@gelu-epoch=49-val_loss=0.0091.ckpt --seed 42
+python transduction_model.py --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory "./models/transduction_model/" --start_training_from /usr/scratch2/sassauna2/msc25f18/checkpoints/pretraining/20@rope@gelu/20@rope@gelu-epoch=49-val_loss=0.0091.ckpt --seed 42
 ```
 where `hifigan_finetuned/checkpoint` is a trained HiFi-GAN generator model (optional).
 At the end of training, an ASR evaluation will be run on the validation set if a HiFi-GAN model is provided.

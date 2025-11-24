@@ -8,6 +8,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
+import torchprofile
 import tqdm
 from absl import flags
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -34,9 +35,10 @@ flags.DEFINE_float(
     "phoneme_loss_weight", 0.5, "weight of auxiliary phoneme prediction loss"
 )
 flags.DEFINE_float("l2", 1e-7, "weight decay")
-flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
+flags.DEFINE_integer("num_workers", 8, "number of workers for dataloaders")
 flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("output_directory", "output", "output directory")
+flags.DEFINE_string("ckpt_directory", "output", "output directory")
 flags.DEFINE_string("log_directory", "logs", "log directory")
 flags.DEFINE_integer("seed", 42, "random seed for data splitting")
 
@@ -246,6 +248,17 @@ def train_model(
         ],
     )
 
+    # FLOPs
+    flops = torchprofile.profile_macs(
+        model,
+        args=(
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+        ),
+    )
+    logging.info(f"FLOPs: {flops / 1e9:.4f} G")
+
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(
             FLAGS.start_training_from, map_location="cpu", weights_only=False
@@ -322,13 +335,13 @@ def train_model(
             best_val_loss = val
             torch.save(
                 model.state_dict(),
-                os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"),
+                os.path.join(FLAGS.ckpt_directory, f"model_{run_id}_best.pt"),
             )
             logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
             torch.save(
                 model.state_dict(),
-                os.path.join(FLAGS.output_directory, f"model_{run_id}_last.pt"),
+                os.path.join(FLAGS.ckpt_directory, f"model_{run_id}_last.pt"),
             )
 
         if save_sound_outputs:
@@ -360,6 +373,7 @@ def train_model(
 def main():
     os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
+    os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
             logging.FileHandler(
@@ -395,6 +409,6 @@ if __name__ == "__main__":
     random.seed(FLAGS.seed)
     np.random.seed(FLAGS.seed)
     writer = SummaryWriter(
-        log_dir=f"/capstor/scratch/cscs/mfasulo/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
+        log_dir=f"/usr/scratch2/sassauna2/msc25f18/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
     )
     main()

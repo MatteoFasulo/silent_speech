@@ -384,12 +384,16 @@ class EMGTransformer(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x_feat, x_raw, session_ids):
+        """
+        Forward pass.
+        x_feat and session_ids are kept for compatibility but unused.
+        """
         # x shape is (batch, time, electrode)
 
         if self.training:
             r = random.randrange(8)
             if r > 0:
-                x_raw[:, :-r, :] = x_raw[:, r:, :]  # shift left r
+                x_raw[:, :-r, :] = x_raw[:, r:, :].clone()  # shift left r
                 x_raw[:, -r:, :] = 0
 
         x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
@@ -403,5 +407,5 @@ class EMGTransformer(nn.Module):
 
         if self.has_aux_out:
             return self.w_out(x), self.w_aux(x)
-        else:
-            return self.w_out(x)
+
+        return self.w_out(x)

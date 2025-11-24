@@ -12,7 +12,7 @@ def evaluate(testset, audio_directory):
 
     asr = EncoderASR.from_hparams(
         source="speechbrain/asr-wav2vec2-librispeech",
-        savedir="pretrained_models/asr-wav2vec2-librispeech",
+        savedir="/usr/scratch2/sassauna2/msc25f18/pretrained_models/asr-wav2vec2-librispeech",
         run_opts={"device": "cuda"},
     )
     if asr:

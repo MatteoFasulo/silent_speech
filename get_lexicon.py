@@ -1,13 +1,10 @@
 # build the lexicon from the dataset
-import sys
+import argparse
 
 import tqdm
-from absl import flags
 
 from data_utils import TextTransform
 from hdf5_dataset import H5EmgDataset
-
-FLAGS = flags.FLAGS
 
 transform = TextTransform()
 
@@ -21,8 +18,8 @@ def get_unigram(dataset):
     return unigram
 
 
-def get_lexicon(vocab):
-    with open("KenLM/gaddy_lexicon.txt", "w") as fout:
+def get_lexicon(vocab, output_file="gaddy_lexicon.txt"):
+    with open(output_file, "w", encoding="utf-8") as fout:
         for word in vocab:
             # split word into char tokens:
             chars = list(word)
@@ -30,7 +27,15 @@ def get_lexicon(vocab):
 
 
 if __name__ == "__main__":
-    FLAGS(sys.argv)
+
+    parser = argparse.ArgumentParser(description="Build lexicon from dataset")
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default="gaddy_lexicon.txt",
+        help="Output lexicon file",
+    )
+    args = parser.parse_args()
     trainset = H5EmgDataset(dev=False, test=False)
     devset = H5EmgDataset(dev=True, test=False)
     testset = H5EmgDataset(dev=False, test=True)
@@ -41,7 +46,7 @@ if __name__ == "__main__":
 
     merged_unigram = train_unigram | dev_unigram | test_unigram
 
-    get_lexicon(merged_unigram)
+    get_lexicon(merged_unigram, output_file=args.output_file)
     print(
-        f"Lexicon saved to gaddy_lexicon.txt with {len(merged_unigram)} unique words."
+        f"Lexicon saved to {args.output_file} with {len(merged_unigram)} unique words."
     )

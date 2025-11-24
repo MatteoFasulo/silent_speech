@@ -6,35 +6,10 @@ from pathlib import Path
 import h5py
 import numpy as np
 import scipy
-from absl import flags
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from data_utils import (get_emg_features, load_audio, phoneme_inventory,
-                        read_phonemes)
-
-FLAGS = flags.FLAGS
-# flags.DEFINE_list('remove_channels', [], 'channels to remove')
-flags.DEFINE_list(
-    "silent_data_directories",
-    ["/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/"],
-    "silent data locations",
-)
-flags.DEFINE_list(
-    "voiced_data_directories",
-    [
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/",
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/",
-    ],
-    "voiced data locations",
-)
-flags.DEFINE_string(
-    "testset_file", "testset_largedev.json", "file with testset indices"
-)
-flags.DEFINE_string(
-    "text_align_directory", "text_alignments", "directory with alignment files"
-)
-flags.DEFINE_string("output_file", "emg_dataset.h5", "output HDF5 file name")
+from data_utils import get_emg_features, load_audio, phoneme_inventory, read_phonemes
 
 
 def remove_drift(signal, fs):
@@ -91,9 +66,9 @@ def load_utterance(
     x = apply_to_all(subsample, x, 516.79, 1000)
     emg = x
 
-    # for c in FLAGS.remove_channels:
-    #    emg[:,int(c)] = 0
-    #    emg_orig[:,int(c)] = 0
+    for c in args.remove_channels:
+        emg[:, int(c)] = 0
+        emg_orig[:, int(c)] = 0
 
     emg_features = get_emg_features(emg)
 
@@ -239,11 +214,57 @@ def main():
 
 
 if __name__ == "__main__":
-    FLAGS(sys.argv)
-    SILENT_DIRS = FLAGS.silent_data_directories
-    VOICED_DIRS = FLAGS.voiced_data_directories
-    TEXT_ALIGN_DIR = FLAGS.text_align_directory
-    out_path = Path(FLAGS.output_file).absolute()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Build HDF5 dataset from raw EMG and audio files."
+    )
+    parser.add_argument(
+        "--remove_channels",
+        nargs="+",
+        default=[],
+        help="List of channel indices to remove from EMG data.",
+    )
+    parser.add_argument(
+        "--silent_data_directories",
+        nargs="+",
+        default=[
+            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/silent_parallel_data/"
+        ],
+        help="Directories containing silent EMG data.",
+    )
+    parser.add_argument(
+        "--voiced_data_directories",
+        nargs="+",
+        default=[
+            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/voiced_parallel_data/",
+            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/nonparallel_data/",
+        ],
+        help="Directories containing voiced EMG data.",
+    )
+    parser.add_argument(
+        "--testset_file",
+        type=str,
+        default="testset_largedev.json",
+        help="File containing test set indices.",
+    )
+    parser.add_argument(
+        "--text_align_directory",
+        type=str,
+        default="text_alignments",
+        help="Directory containing text alignment files.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default="emg_dataset.h5",
+        help="Output HDF5 file name.",
+    )
+    args = parser.parse_args()
+    SILENT_DIRS = args.silent_data_directories
+    VOICED_DIRS = args.voiced_data_directories
+    TEXT_ALIGN_DIR = args.text_align_directory
+    out_path = Path(args.output_file).absolute()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     OUT_FILE = str(out_path)
     main()

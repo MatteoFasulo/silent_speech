@@ -15,14 +15,14 @@ from data_utils import TextTransform
 FLAGS = flags.FLAGS
 flags.DEFINE_list(
     "silent_data_directories",
-    ["/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/silent_parallel_data/"],
+    ["/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/silent_parallel_data/"],
     "silent data locations",
 )
 flags.DEFINE_list(
     "voiced_data_directories",
     [
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/voiced_parallel_data/",
-        "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/emg_data/nonparallel_data/",
+        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/voiced_parallel_data/",
+        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/nonparallel_data/",
     ],
     "voiced data locations",
 )
@@ -31,7 +31,7 @@ flags.DEFINE_string(
 )
 flags.DEFINE_string(
     "h5_path",
-    "/capstor/scratch/cscs/mfasulo/datasets/Gaddy/h5/emg_dataset.h5",
+    "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/h5/emg_dataset.h5",
     "HDF5 file",
 )
 

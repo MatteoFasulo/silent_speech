@@ -8,6 +8,7 @@ import jiwer
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchprofile
 import tqdm
 from absl import flags
 from torch import nn
@@ -25,6 +26,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_boolean("debug", False, "debug")
 flags.DEFINE_boolean("dev", False, "evaluate dev instead of test")
 flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
+flags.DEFINE_string("ckpt_directory", "output", "where to save models and outputs")
 flags.DEFINE_integer("batch_size", 32, "training batch size")
 flags.DEFINE_integer("num_epochs", 200, "number of epochs")
 flags.DEFINE_float("learning_rate", 5e-4, "learning rate")
@@ -34,7 +36,7 @@ flags.DEFINE_string("start_training_from", None, "start training from this model
 flags.DEFINE_float("l2", 0, "weight decay")
 flags.DEFINE_integer("eval_interval", 5, "evaluate every n epochs")
 flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
-flags.DEFINE_integer("num_workers", 64, "number of workers for dataloaders")
+flags.DEFINE_integer("num_workers", 8, "number of workers for dataloaders")
 flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
 flags.DEFINE_string("lm_directory", "KenLM", "directory with language model files")
 flags.DEFINE_boolean("verbose", False, "print verbose output")
@@ -187,7 +189,7 @@ def train_model(model, trainset, devset, device):
                 best_val_loss = val
                 torch.save(
                     model.state_dict(),
-                    os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"),
+                    os.path.join(FLAGS.ckpt_directory, f"model_{run_id}_best.pt"),
                 )
                 logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
@@ -202,13 +204,8 @@ def train_model(model, trainset, devset, device):
         writer.add_scalar("val/wer", val, epoch_idx)
         torch.save(
             model.state_dict(),
-            os.path.join(FLAGS.output_directory, f"model_{run_id}_last.pt"),
+            os.path.join(FLAGS.ckpt_directory, f"model_{run_id}_last.pt"),
         )
-
-    # re-load best parameters
-    model.load_state_dict(
-        torch.load(os.path.join(FLAGS.output_directory, f"model_{run_id}_best.pt"))
-    )
 
     return model
 
@@ -243,6 +240,7 @@ def evaluate_saved():
 def main():
     os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
+    os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
             logging.FileHandler(
@@ -277,6 +275,17 @@ def main():
         ],
     )
 
+    # FLOPs
+    flops = torchprofile.profile_macs(
+        model,
+        (
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+        ),
+    )
+    logging.info(f"FLOPs: {flops / 1e9:.4f} G")
+
     best_ckpt_model = train_model(model, trainset, devset, device)
 
     # Run test
@@ -293,7 +302,7 @@ if __name__ == "__main__":
     random.seed(FLAGS.seed)
     np.random.seed(FLAGS.seed)
     writer = SummaryWriter(
-        log_dir=f"/capstor/scratch/cscs/mfasulo/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
+        log_dir=f"/usr/scratch2/sassauna2/msc25f18/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
     )
     if FLAGS.evaluate_saved is not None:
         evaluate_saved()
