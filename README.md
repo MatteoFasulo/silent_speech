@@ -27,7 +27,7 @@ python download_data.py --output_dir $DATA_PATH/datasets/Gaddy/
 
 ## Environment Setup
 
-The code has been tested with Python 3.10.10 and requires a number of Python packages, including PyTorch with CUDA support.
+The code has been tested with Python 3.10 and requires a number of Python packages, including PyTorch with CUDA support.
 Set up a virtual environment and install the required packages using the following commands:
 
 ```bash
