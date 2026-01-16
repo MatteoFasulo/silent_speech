@@ -8,6 +8,29 @@ Audio samples can be found [here](https://dgaddy.github.io/silent_speech_samples
 
 The repository also includes code for directly converting silent speech to text.  See the section labeled [Silent Speech Recognition](#silent-speech-recognition).
 
+## Changes from Prior Versions
+
+Compared to the original code several changes have been made to improve usability of the codebase:
+
+- We added a script to download the data directly into the expected directory structure.
+- The environment setup instructions have been updated to use [`uv`](https://docs.astral.sh/uv/) to simplify installation of PyTorch with CUDA support. You can still use yout preferred method to install dependencies if desired via the `requirements.txt` or `pyproject.toml` files.
+- The audio cleaning step has been improved by running the cleaning in parallel and saving cleaned audio files to avoid re-sampling on each training run.
+- Instead of building the dataset on-the-fly during training each time, a script has been added to build the HDF5 dataset once and save it to disk for faster loading during training. This can save a significant amount of time during training depending on your hardware.
+- Additional flags to resume training from a checkpoint have been added (in this way you can continue training from a pre-trained model to check performance improvements over downstream tasks).
+- The DeepSpeech library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models due to compatibility issues (mainly associated with CPU architecture incompatibilities).
+- A shell script has been added to simplify evaluation of multiple models in a directory by saving WER results to a CSV file.
+- The CTC beam search decoder has been changed to use torchaudio's built-in decoder instead of the original ctcdecode library due to compatibility issues.
+  - Additional instructions have been added to download the KenLM language model and generate the lexicon needed for decoding.
+- Tensorboard logging has been added to monitor training progress.
+
+### What could be improved further
+
+There are some additional improvements that could be made to further improve usability:
+
+- Following [Stanford - MONA LISA](https://github.com/tbenst/silent_speech), `hydra` could be used for configuration management to simplify hyperparameter tuning and experiment tracking. Additionally, `pytorch lightning` could be used to simplify the training loop and improve reproducibility.
+- The dataset building process could be further optimized by using a more efficient data storage format or by implementing a more efficient data loading pipeline. Currently, the HDF5 dataset is built to be used with a single GPU setup.  Further work could be done to optimize for multi-GPU setups (e.g., using a different data sampler suitable for distributed training).
+- Training progress could be monitored more easily using tools like `Weights & Biases` to store experiment results and visualize training metrics over time with less setup required.
+
 ## Data
 
 The EMG and audio data can be downloaded from <https://doi.org/10.5281/zenodo.4064408>.  The scripts expect the data to be located in a `emg_data` subdirectory by default, but the location can be overridden with flags (see the top of `read_emg.py`).
@@ -28,12 +51,13 @@ python download_data.py --output_dir $DATA_PATH/datasets/Gaddy/
 ## Environment Setup
 
 The code has been tested with Python 3.10 and requires a number of Python packages, including PyTorch with CUDA support.
-Set up a virtual environment and install the required packages using the following commands:
+Set up a virtual environment and install the required packages. We suggest using [`uv`](https://docs.astral.sh/uv/) to install all the dependencies, including PyTorch with the appropriate CUDA version.
 
 ```bash
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
-pip install absl-py numpy librosa pysoundfile matplotlib scipy numba unidecode tqdm jiwer==2.2.1 praat-textgrids noisereduce torchinfo tensorboard einops timm speechbrain h5py transformers 'huggingface_hub<1.0' omegaconf torch-tb-profiler pandas flashlight-text KenLM
+uv sync
 ```
+
+alternatively, you can manually install the dependencies listed in `pyproject.toml`, making sure to install the correct version of PyTorch for your CUDA setup from <https://pytorch.org/get-started/locally/>.
 
 You will also need to pull git submodules for Hifi-GAN and the phoneme alignment data, using the following commands:
 
@@ -43,7 +67,7 @@ git submodule update
 tar -xvzf text_alignments/text_alignments.tar.gz
 ```
 
-Due to compatibility issues, `DeepSpeech` library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models.
+Due to compatibility issues, `DeepSpeech` library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models. Such models will be downloaded automatically when running the evaluation script and cached in your Hugging Face cache directory.
 
 ### Audio Cleaning
 
