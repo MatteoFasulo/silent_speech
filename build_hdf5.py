@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 from pathlib import Path
 
 import h5py
@@ -42,9 +41,7 @@ def apply_to_all(function, signal_array, *args, **kwargs):
     return np.stack(results, 1)
 
 
-def load_utterance(
-    base_dir, index, limit_length=False, debug=False, text_align_directory=None
-):
+def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_directory=None):
     index = int(index)
     raw_emg = np.load(os.path.join(base_dir, f"{index}_emg.npy"))
     before = os.path.join(base_dir, f"{index-1}_emg.npy")
@@ -92,9 +89,7 @@ def load_utterance(
     if os.path.exists(tg_fname):
         phonemes = read_phonemes(tg_fname, mfccs.shape[0])
     else:
-        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index(
-            "sil"
-        )
+        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index("sil")
 
     return (
         mfccs,
@@ -148,9 +143,7 @@ def main():
             tasks.append(("voiced", os.path.join(vd, sess)))
 
     # 2) parallel load into Python structures
-    all_records = Parallel(n_jobs=24, verbose=1)(
-        delayed(gather_utterance_records)(mode, d) for mode, d in tasks
-    )
+    all_records = Parallel(n_jobs=24, verbose=1)(delayed(gather_utterance_records)(mode, d) for mode, d in tasks)
     # flatten list of lists
     all_records = [r for rec_list in all_records for r in rec_list]
     print(f"Loaded {len(all_records)} utterances into RAM.")
@@ -201,9 +194,7 @@ def main():
                     data=rec["parallel_voiced_audio_features"],
                     chunks=True,
                 )
-                utt_grp.create_dataset(
-                    "parallel_voiced_emg", data=rec["parallel_voiced_emg"], chunks=True
-                )
+                utt_grp.create_dataset("parallel_voiced_emg", data=rec["parallel_voiced_emg"], chunks=True)
 
             utt_grp.attrs["text"] = rec["text"]
             utt_grp.attrs["book"] = rec["book"]
@@ -216,9 +207,7 @@ def main():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Build HDF5 dataset from raw EMG and audio files."
-    )
+    parser = argparse.ArgumentParser(description="Build HDF5 dataset from raw EMG and audio files.")
     parser.add_argument(
         "--remove_channels",
         nargs="+",
@@ -228,17 +217,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--silent_data_directories",
         nargs="+",
-        default=[
-            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/silent_parallel_data/"
-        ],
+        default=["$DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data/"],
         help="Directories containing silent EMG data.",
     )
     parser.add_argument(
         "--voiced_data_directories",
         nargs="+",
         default=[
-            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/voiced_parallel_data/",
-            "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/nonparallel_data/",
+            "$DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data/",
+            "$DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data/",
         ],
         help="Directories containing voiced EMG data.",
     )

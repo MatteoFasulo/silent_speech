@@ -15,23 +15,21 @@ from data_utils import TextTransform
 FLAGS = flags.FLAGS
 flags.DEFINE_list(
     "silent_data_directories",
-    ["/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/silent_parallel_data/"],
+    ["$DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data/"],
     "silent data locations",
 )
 flags.DEFINE_list(
     "voiced_data_directories",
     [
-        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/voiced_parallel_data/",
-        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/nonparallel_data/",
+        "$DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data/",
+        "$DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data/",
     ],
     "voiced data locations",
 )
-flags.DEFINE_string(
-    "testset_file", "testset_largedev.json", "file with testset indices"
-)
+flags.DEFINE_string("testset_file", "testset_largedev.json", "file with testset indices")
 flags.DEFINE_string(
     "h5_path",
-    "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/h5/emg_dataset.h5",
+    "$DATA_PATH/datasets/Gaddy/h5/emg_dataset.h5",
     "HDF5 file",
 )
 
@@ -69,15 +67,9 @@ class H5EmgDataset(Dataset):
             if "silent" in h5:
                 for sd in FLAGS.silent_data_directories:
                     for sess in h5["silent"]:
-                        dirs.append(
-                            EMGDirectory(len(dirs), os.path.join(sd, sess), True)
-                        )
+                        dirs.append(EMGDirectory(len(dirs), os.path.join(sd, sess), True))
 
-            has_silent = (
-                len(FLAGS.silent_data_directories) > 0
-                and "silent" in h5
-                and len(h5["silent"]) > 0
-            )
+            has_silent = len(FLAGS.silent_data_directories) > 0 and "silent" in h5 and len(h5["silent"]) > 0
 
             # voiced sessions
             if "voiced" in h5:
@@ -142,9 +134,7 @@ class H5EmgDataset(Dataset):
 
         # Load normalizers only if not disabled
         if not self.no_normalizers:
-            self.mfcc_norm, self.emg_norm = pickle.load(
-                open(FLAGS.normalizers_file, "rb")
-            )
+            self.mfcc_norm, self.emg_norm = pickle.load(open(FLAGS.normalizers_file, "rb"))
 
         with h5py.File(FLAGS.h5_path, "r") as h5:
             d, utt = self.example_indices[0]
@@ -159,9 +149,7 @@ class H5EmgDataset(Dataset):
 
     def subset(self, fraction):
         result = copy(self)
-        result.example_indices = self.example_indices[
-            : int(fraction * len(self.example_indices))
-        ]
+        result.example_indices = self.example_indices[: int(fraction * len(self.example_indices))]
         return result
 
     def __len__(self):
@@ -200,13 +188,9 @@ class H5EmgDataset(Dataset):
             "raw_emg": torch.from_numpy(raw),
             "phonemes": torch.from_numpy(phonemes),
             "text": text,
-            "text_int": torch.from_numpy(
-                np.array(self.text_transform.text_to_int(text), dtype=np.int64)
-            ),
+            "text_int": torch.from_numpy(np.array(self.text_transform.text_to_int(text), dtype=np.int64)),
             "text_int_lengths": len(text),
-            "session_ids": torch.full(
-                (emg.shape[0],), fill_value=d.session_index, dtype=torch.int64
-            ),
+            "session_ids": torch.full((emg.shape[0],), fill_value=d.session_index, dtype=torch.int64),
             "book_location": (grp.attrs["book"], int(grp.attrs["sentence_index"])),
             "silent": silent,
         }
@@ -237,9 +221,7 @@ class H5EmgDataset(Dataset):
         for ex in batch:
             if ex["silent"]:
                 audio_features.append(ex["parallel_voiced_audio_features"])
-                audio_feature_lengths.append(
-                    ex["parallel_voiced_audio_features"].shape[0]
-                )
+                audio_feature_lengths.append(ex["parallel_voiced_audio_features"].shape[0])
                 parallel_emg.append(ex["parallel_voiced_emg"])
             else:
                 audio_features.append(ex["audio_features"])

@@ -1,13 +1,11 @@
 import copy
 import json
-import logging
 import os
 import pickle
 import random
 import re
 import string
 import sys
-import time
 from copy import copy
 from functools import lru_cache
 
@@ -29,23 +27,21 @@ FLAGS = flags.FLAGS
 # flags.DEFINE_list("remove_channels", [], "channels to remove")
 # flags.DEFINE_list(
 #    "silent_data_directories",
-#    ["/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/silent_parallel_data/"],
+#    ["$DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data/"],
 #    "silent data locations",
 # )
 # flags.DEFINE_list(
 #    "voiced_data_directories",
 #    [
-#        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/voiced_parallel_data/",
-#        "/usr/scratch2/sassauna2/msc25f18/datasets/Gaddy/emg_data/nonparallel_data/",
+#        "$DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data/",
+#        "$DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data/",
 #    ],
 #    "voiced data locations",
 # )
 # flags.DEFINE_string(
 #    "testset_file", "testset_largedev.json", "file with testset indices"
 # )
-flags.DEFINE_string(
-    "text_align_directory", "text_alignments", "directory with alignment files"
-)
+flags.DEFINE_string("text_align_directory", "text_alignments", "directory with alignment files")
 
 
 def remove_drift(signal, fs):
@@ -78,9 +74,7 @@ def apply_to_all(function, signal_array, *args, **kwargs):
     return np.stack(results, 1)
 
 
-def load_utterance(
-    base_dir, index, limit_length=False, debug=False, text_align_directory=None
-):
+def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_directory=None):
     index = int(index)
     raw_emg = np.load(os.path.join(base_dir, f"{index}_emg.npy"))
     before = os.path.join(base_dir, f"{index-1}_emg.npy")
@@ -128,9 +122,7 @@ def load_utterance(
     if os.path.exists(tg_fname):
         phonemes = read_phonemes(tg_fname, mfccs.shape[0])
     else:
-        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index(
-            "sil"
-        )
+        phonemes = np.zeros(mfccs.shape[0], dtype=np.int64) + phoneme_inventory.index("sil")
 
     return (
         mfccs,
@@ -224,11 +216,7 @@ class EMGDataset(torch.utils.data.Dataset):
         else:
             for sd in FLAGS.silent_data_directories:
                 for session_dir in sorted(os.listdir(sd)):
-                    directories.append(
-                        EMGDirectory(
-                            len(directories), os.path.join(sd, session_dir), True
-                        )
-                    )
+                    directories.append(EMGDirectory(len(directories), os.path.join(sd, session_dir), True))
 
             has_silent = len(FLAGS.silent_data_directories) > 0
             for vd in FLAGS.voiced_data_directories:
@@ -243,9 +231,7 @@ class EMGDataset(torch.utils.data.Dataset):
                     )
 
         self.example_indices = []
-        self.voiced_data_locations = (
-            {}
-        )  # map from book/sentence_index to directory_info/index
+        self.voiced_data_locations = {}  # map from book/sentence_index to directory_info/index
         for directory_info in directories:
             for fname in os.listdir(directory_info.directory):
                 m = re.match(r"(\d+)_info.json", fname)
@@ -253,9 +239,7 @@ class EMGDataset(torch.utils.data.Dataset):
                     idx_str = m.group(1)
                     with open(os.path.join(directory_info.directory, fname)) as f:
                         info = json.load(f)
-                        if (
-                            info["sentence_index"] >= 0
-                        ):  # boundary clips of silence are marked -1
+                        if info["sentence_index"] >= 0:  # boundary clips of silence are marked -1
                             location_in_testset = [
                                 info["book"],
                                 info["sentence_index"],
@@ -265,26 +249,11 @@ class EMGDataset(torch.utils.data.Dataset):
                                 info["sentence_index"],
                             ] in devset
                             if (
-                                (
-                                    test
-                                    and location_in_testset
-                                    and not directory_info.exclude_from_testset
-                                )
-                                or (
-                                    dev
-                                    and location_in_devset
-                                    and not directory_info.exclude_from_testset
-                                )
-                                or (
-                                    not test
-                                    and not dev
-                                    and not location_in_testset
-                                    and not location_in_devset
-                                )
+                                (test and location_in_testset and not directory_info.exclude_from_testset)
+                                or (dev and location_in_devset and not directory_info.exclude_from_testset)
+                                or (not test and not dev and not location_in_testset and not location_in_devset)
                             ):
-                                self.example_indices.append(
-                                    (directory_info, int(idx_str))
-                                )
+                                self.example_indices.append((directory_info, int(idx_str)))
 
                             if not directory_info.silent:
                                 location = (info["book"], info["sentence_index"])
@@ -298,9 +267,7 @@ class EMGDataset(torch.utils.data.Dataset):
 
         self.no_normalizers = no_normalizers
         if not self.no_normalizers:
-            self.mfcc_norm, self.emg_norm = pickle.load(
-                open(FLAGS.normalizers_file, "rb")
-            )
+            self.mfcc_norm, self.emg_norm = pickle.load(open(FLAGS.normalizers_file, "rb"))
 
         sample_mfccs, sample_emg, _, _, _, _ = load_utterance(
             self.example_indices[0][0].directory, self.example_indices[0][1]
@@ -323,9 +290,7 @@ class EMGDataset(torch.utils.data.Dataset):
 
     def subset(self, fraction):
         result = copy(self)
-        result.example_indices = self.example_indices[
-            : int(fraction * len(self.example_indices))
-        ]
+        result.example_indices = self.example_indices[: int(fraction * len(self.example_indices))]
         return result
 
     def __len__(self):
@@ -348,9 +313,7 @@ class EMGDataset(torch.utils.data.Dataset):
             emg = self.emg_norm.normalize(emg)
             emg = 8 * np.tanh(emg / 8.0)
 
-        session_ids = np.full(
-            emg.shape[0], directory_info.session_index, dtype=np.int64
-        )
+        session_ids = np.full(emg.shape[0], directory_info.session_index, dtype=np.int64)
         audio_file = f"{directory_info.directory}/{idx}_audio_clean.flac"
 
         text_int = np.array(self.text_transform.text_to_int(text), dtype=np.int64)
@@ -381,9 +344,7 @@ class EMGDataset(torch.utils.data.Dataset):
                 voiced_emg = self.emg_norm.normalize(voiced_emg)
                 voiced_emg = 8 * np.tanh(voiced_emg / 8.0)
 
-            result["parallel_voiced_audio_features"] = torch.from_numpy(
-                voiced_mfccs
-            ).pin_memory()
+            result["parallel_voiced_audio_features"] = torch.from_numpy(voiced_mfccs).pin_memory()
             result["parallel_voiced_emg"] = torch.from_numpy(voiced_emg).pin_memory()
 
             audio_file = f"{voiced_directory.directory}/{voiced_idx}_audio_clean.flac"
@@ -404,9 +365,7 @@ class EMGDataset(torch.utils.data.Dataset):
         for ex in batch:
             if ex["silent"]:
                 audio_features.append(ex["parallel_voiced_audio_features"])
-                audio_feature_lengths.append(
-                    ex["parallel_voiced_audio_features"].shape[0]
-                )
+                audio_feature_lengths.append(ex["parallel_voiced_audio_features"].shape[0])
                 parallel_emg.append(ex["parallel_voiced_emg"])
             else:
                 audio_features.append(ex["audio_features"])

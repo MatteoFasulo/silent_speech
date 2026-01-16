@@ -12,16 +12,11 @@ def evaluate(testset, audio_directory):
 
     asr = EncoderASR.from_hparams(
         source="speechbrain/asr-wav2vec2-librispeech",
-        savedir="/usr/scratch2/sassauna2/msc25f18/pretrained_models/asr-wav2vec2-librispeech",
         run_opts={"device": "cuda"},
     )
     if asr:
-        for i, datapoint in enumerate(
-            tqdm.tqdm(testset, "Evaluate outputs", disable=None)
-        ):
-            text = asr.transcribe_file(
-                os.path.join(audio_directory, f"example_output_{i}.wav")
-            )
+        for i, datapoint in enumerate(tqdm.tqdm(testset, "Evaluate outputs", disable=None)):
+            text = asr.transcribe_file(os.path.join(audio_directory, f"example_output_{i}.wav"))
 
             pred_text = testset.text_transform.clean_text(text)
             target_text = testset.text_transform.clean_text(datapoint["text"])
@@ -37,5 +32,5 @@ def evaluate(testset, audio_directory):
         for i in range(len(targets)):
             logging.debug(f"Target: {targets[i]}")
             logging.debug(f"Prediction: {predictions[i]}")
-            logging.debug(f"---" * 50)
+            logging.debug("---" * 50)
         logging.info(f"WER: {jiwer.wer(targets, predictions)}")

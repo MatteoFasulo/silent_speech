@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 import sys
 from datetime import datetime
 
@@ -12,7 +11,6 @@ import torchprofile
 import tqdm
 from absl import flags
 from torch import nn
-from torch.utils.tensorboard.writer import SummaryWriter
 from torchaudio.models.decoder import ctc_decoder
 from torchinfo import summary
 
@@ -117,21 +115,14 @@ def train_model(model, trainset, devset, device):
 
     n_chars = len(devset.text_transform.chars)
     if FLAGS.start_training_from is not None:
-        state_dict = torch.load(
-            FLAGS.start_training_from, map_location="cpu", weights_only=False
-        )["state_dict"]
-        state_dict = {
-            k.replace("model.", "") if k.startswith("model.") else k: v
-            for k, v in state_dict.items()
-        }
+        state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
+        state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
     optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
     # lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
-    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optim, "min", 0.5, patience=FLAGS.learning_rate_patience
-    )
+    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
 
     def set_lr(new_lr):
         for param_group in optim.param_groups:
@@ -161,14 +152,10 @@ def train_model(model, trainset, devset, device):
             pred = nn.utils.rnn.pad_sequence(
                 decollate_tensor(pred, example["lengths"]), batch_first=False
             )  # seq first, as required by ctc
-            y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(
-                device
-            )
+            y = nn.utils.rnn.pad_sequence(example["text_int"], batch_first=True).to(device)
 
             # CTC loss
-            loss = F.ctc_loss(
-                pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars
-            )
+            loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars)
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
 
@@ -193,9 +180,7 @@ def train_model(model, trainset, devset, device):
                 )
                 logging.info(f"Val loss improved, new best val loss: {val:.4f}")
         else:
-            logging.info(
-                f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed"
-            )
+            logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed")
 
         lr_sched.step(val)
         current_lr = optim.param_groups[0]["lr"]
@@ -221,9 +206,7 @@ def evaluate_saved():
         testset.num_features,
         n_chars + 1,
     ).to(device)
-    model.load_state_dict(
-        torch.load(FLAGS.evaluate_saved, map_location=device), strict=True
-    )
+    model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
     summary(
         model,
         input_data=[
@@ -243,9 +226,7 @@ def main():
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(
-                os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")
-            ),
+            logging.FileHandler(os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
@@ -263,9 +244,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
 
     n_chars = len(devset.text_transform.chars)
-    model = EMGTransformer(
-        devset.num_features, n_chars + 1, freeze_blocks=FLAGS.freeze_blocks
-    ).to(device)
+    model = EMGTransformer(devset.num_features, n_chars + 1, freeze_blocks=FLAGS.freeze_blocks).to(device)
     summary(
         model,
         input_data=[
@@ -293,18 +272,3 @@ def main():
     logging.info("Test WER: %.2f%%", test_wer * 100)
     writer.add_scalar("test/wer", test_wer, 0)
     return
-
-
-if __name__ == "__main__":
-    FLAGS(sys.argv)
-    torch.manual_seed(FLAGS.seed)
-    torch.cuda.manual_seed(FLAGS.seed)
-    random.seed(FLAGS.seed)
-    np.random.seed(FLAGS.seed)
-    writer = SummaryWriter(
-        log_dir=f"/usr/scratch2/sassauna2/msc25f18/outputs/finetuning/silent_speech/{task}/{run_id}_seed{FLAGS.seed}"
-    )
-    if FLAGS.evaluate_saved is not None:
-        evaluate_saved()
-    else:
-        main()
