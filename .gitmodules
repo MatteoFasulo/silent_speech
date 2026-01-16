@@ -5,4 +5,4 @@
 [submodule "text_alignments"]
 	path = text_alignments
 	url = https://github.com/dgaddy/silent_speech_alignments.git
-    branch = main
+  branch = main

@@ -1,0 +1,50 @@
+[project]
+name = "silent_speech"
+version = "0.1.0"
+readme = "README.md"
+
+requires-python = ">=3.10"
+dependencies = [
+    "absl-py",
+    "numpy",
+    "librosa",
+    "pysoundfile",
+    "matplotlib",
+    "scipy",
+    "numba",
+    "unidecode",
+    "tqdm",
+    "jiwer==2.2.1",
+    "praat-textgrids",
+    "noisereduce",
+    "torchinfo",
+    "tensorboard",
+    "timm",
+    "speechbrain",
+    "h5py",
+    "transformers",
+    "huggingface_hub<1.0",
+    "omegaconf",
+    "torch-tb-profiler",
+    "pandas",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
+    "resampy"
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu126"
+
+[tool.isort]
+py_version = 312
+profile = "black"
+line_length = 120
+
+[tool.black]
+line-length = 120
+target-version = ['py310', 'py311', 'py312']

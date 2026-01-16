@@ -1,30 +1,38 @@
-import sys
 import os
-import numpy as np
+import sys
 
-import noisereduce as nr
-import soundfile as sf
 import librosa
+import noisereduce as nr
+import numpy as np
+import soundfile as sf
 import tqdm
+from joblib import Parallel, delayed
+
 
 def clean_directory(directory):
-    silence, rate = sf.read(os.path.join(directory, '0_audio.flac'))
+    silence, rate = sf.read(os.path.join(directory, "0_audio.flac"))
 
     audio_file_names = []
     # load audio files in numerical order
     while True:
         i = len(audio_file_names)
-        fname = os.path.join(directory, f'{i}_audio.flac')
+        fname = os.path.join(directory, f"{i}_audio.flac")
         if os.path.exists(fname):
             audio_file_names.append(fname)
         else:
             break
 
-    all_audio_file_names = [os.path.join(directory, fname) for fname in os.listdir(directory) if fname.endswith('_audio.flac')]
-    assert len(audio_file_names) == len(all_audio_file_names), 'error discovering audio files'
+    all_audio_file_names = [
+        os.path.join(directory, fname)
+        for fname in os.listdir(directory)
+        if fname.endswith("_audio.flac")
+    ]
+    assert len(audio_file_names) == len(
+        all_audio_file_names
+    ), "error discovering audio files"
 
     all_rmses = []
-    for fname in tqdm.tqdm(audio_file_names, 'Read for calibration', disable=None):
+    for fname in audio_file_names:
         data, rate = sf.read(fname)
         rms = librosa.feature.rms(y=data)[0]
         all_rmses.append(rms)
@@ -38,16 +46,26 @@ def clean_directory(directory):
     smoothed_maxes = []
     is_silent = False
     for i in range(len(max_rmses)):
-        vs = [max_rmses[j] for j in range(max(0,i-smoothing_width),min(i+1+smoothing_width,len(max_rmses))) if max_rmses[j] > silent_cutoff]
+        vs = [
+            max_rmses[j]
+            for j in range(
+                max(0, i - smoothing_width),
+                min(i + 1 + smoothing_width, len(max_rmses)),
+            )
+            if max_rmses[j] > silent_cutoff
+        ]
         if len(vs) == 0:
             is_silent = True
             break
         smoothed_maxes.append(np.mean(vs))
 
     if is_silent:
-        print('long run of quiet audio, skipping volume normalization')
+        print("long run of quiet audio, skipping volume normalization")
 
-    for i, fname in enumerate(tqdm.tqdm(audio_file_names, 'Clean data', disable=None)):
+    for i, fname in enumerate(audio_file_names):
+        # if clean already exists, skip
+        if os.path.exists(fname[:-5] + "_resampled.flac"):
+            continue
         data, rate = sf.read(fname)
 
         clean = nr.reduce_noise(y=data, sr=rate, y_noise=silence, stationary=True)
@@ -57,14 +75,26 @@ def clean_directory(directory):
         if not is_silent:
             clean *= target_rms / smoothed_maxes[i]
             max_val = np.abs(clean).max()
-            if max_val > clip_to: # this shouldn't happen too often with target_rms of 0.2
+            if (
+                max_val > clip_to
+            ):  # this shouldn't happen too often with target_rms of 0.2
                 clean = clean / max_val * clip_to
 
-        clean_full_name = fname[:-5] + '_clean.flac'
+        clean_full_name = fname[:-5] + "_resampled.flac"
         sf.write(clean_full_name, clean, rate)
+        print(f"cleaned {fname} -> {clean_full_name}")
 
-assert len(sys.argv) > 1, 'requires at least 1 argument: the directories to process'
-for i in range(1, len(sys.argv)):
-    print('cleaning', sys.argv[i])
-    for sub in os.listdir(sys.argv[i]):
-        clean_directory(os.path.join(sys.argv[i], sub))
+    return True
+
+
+if __name__ == "__main__":
+    assert len(sys.argv) > 1, "requires at least 1 argument: the directories to process"
+    for root_dir in sys.argv[1:]:
+        print("cleaning", root_dir)
+        subdirs = [
+            d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))
+        ]
+        n_jobs = min(len(subdirs), os.cpu_count() or 1)
+        Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(clean_directory)(os.path.join(root_dir, sub)) for sub in subdirs
+        )
