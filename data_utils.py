@@ -1,4 +1,7 @@
+import json
+import os
 import string
+from types import SimpleNamespace
 
 import jiwer
 import librosa
@@ -6,14 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 import torch
-from absl import flags
 from textgrids import TextGrid
+from torch.utils.tensorboard.writer import SummaryWriter
 from unidecode import unidecode
-
-FLAGS = flags.FLAGS
-flags.DEFINE_string(
-    "normalizers_file", "normalizers.pkl", "file with pickled feature normalizers"
-)
 
 phoneme_inventory = [
     "aa",
@@ -91,9 +89,7 @@ mel_basis = {}
 hann_window = {}
 
 
-def mel_spectrogram(
-    y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False
-):
+def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
     if torch.min(y) < -1.0:
         print("min value is ", torch.min(y))
     if torch.max(y) > 1.0:
@@ -101,12 +97,8 @@ def mel_spectrogram(
 
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa.filters.mel(
-            sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax
-        )
-        mel_basis[str(fmax) + "_" + str(y.device)] = (
-            torch.from_numpy(mel).float().to(y.device)
-        )
+        mel = librosa.filters.mel(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
+        mel_basis[str(fmax) + "_" + str(y.device)] = torch.from_numpy(mel).float().to(y.device)
         hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
 
     y = torch.nn.functional.pad(
@@ -137,9 +129,7 @@ def mel_spectrogram(
     return spec
 
 
-def load_audio(
-    filename, start=None, end=None, max_frames=None, renormalize_volume=False
-):
+def load_audio(filename, start=None, end=None, max_frames=None, renormalize_volume=False):
     audio, r = sf.read(filename)
 
     if len(audio.shape) > 1:
@@ -153,9 +143,7 @@ def load_audio(
         audio = librosa.resample(audio, orig_sr=16000, target_sr=22050)
     else:
         assert r == 22050
-    audio = np.clip(
-        audio, -1, 1
-    )  # because resampling sometimes pushes things out of range
+    audio = np.clip(audio, -1, 1)  # because resampling sometimes pushes things out of range
     pytorch_mspec = mel_spectrogram(
         torch.tensor(audio, dtype=torch.float32).unsqueeze(0),
         1024,
@@ -195,15 +183,11 @@ def get_emg_features(emg_data, debug=False):
         p_w = np.squeeze(p_w, 0)
         p_r = librosa.feature.rms(y=r, frame_length=16, hop_length=6, center=False)
         p_r = np.squeeze(p_r, 0)
-        z_p = librosa.feature.zero_crossing_rate(
-            p, frame_length=16, hop_length=6, center=False
-        )
+        z_p = librosa.feature.zero_crossing_rate(p, frame_length=16, hop_length=6, center=False)
         z_p = np.squeeze(z_p, 0)
         r_h = librosa.util.frame(r, frame_length=16, hop_length=6).mean(axis=0)
 
-        s = abs(
-            librosa.stft(np.ascontiguousarray(x), n_fft=16, hop_length=6, center=False)
-        )
+        s = abs(librosa.stft(np.ascontiguousarray(x), n_fft=16, hop_length=6, center=False))
         # s has feature dimension first and time second
 
         if debug:
@@ -318,8 +302,7 @@ def print_confusion(confusion_mat, n=10):
             if p1 != p2:
                 aslist.append(
                     (
-                        (confusion_mat[p1, p2] + confusion_mat[p2, p1])
-                        / (target_counts[p1] + target_counts[p2]),
+                        (confusion_mat[p1, p2] + confusion_mat[p2, p1]) / (target_counts[p1] + target_counts[p2]),
                         p1,
                         p2,
                     )
@@ -479,9 +462,7 @@ def applyCustomCorrections(sentence, replacement_dict):
 
 class TextTransform(object):
     def __init__(self):
-        self.transformation = jiwer.Compose(
-            [jiwer.RemovePunctuation(), jiwer.ToLowerCase()]
-        )
+        self.transformation = jiwer.Compose([jiwer.RemovePunctuation(), jiwer.ToLowerCase()])
         self.replacement_dict = {
             "£250": "two hundred fifty pounds",
             "£1000": "one thousand pounds",
@@ -515,3 +496,26 @@ class TextTransform(object):
     def int_to_phone_str(self, ints):
         text = " ".join(self.chars[i] for i in ints)
         return text
+
+
+def load_config(
+    config_path: str,
+    encoding: str = "utf-8",
+) -> SimpleNamespace:
+    """Load a JSON configuration file and return it as a dictionary."""
+    with open(config_path, "r", encoding=encoding) as f:
+        config = json.load(f)
+    return SimpleNamespace(**config)
+
+
+def get_writer(
+    log_dir: str,
+    run_id: str,
+    **kwargs,
+) -> SummaryWriter:
+    """Create a TensorBoard SummaryWriter."""
+    writer = SummaryWriter(
+        log_dir=os.path.join(log_dir, run_id),
+        **kwargs,
+    )
+    return writer

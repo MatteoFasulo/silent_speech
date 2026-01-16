@@ -9,38 +9,25 @@ import torch
 import torch.nn.functional as F
 import torchprofile
 import tqdm
-from absl import flags
 from torchinfo import summary
-
-from adapted_emg_transformer import EMGTransformer
 
 # from architecture import Model as EMGTransformer
 from align import align_from_distances
+from architecture import EMGTransformer
 from asr_evaluation import evaluate
-from data_utils import combine_fixed_length, decollate_tensor, phoneme_inventory
+from data_utils import (
+    combine_fixed_length,
+    decollate_tensor,
+    get_writer,
+    load_config,
+    phoneme_inventory,
+)
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 from vocoder import Vocoder
 
-FLAGS = flags.FLAGS
-flags.DEFINE_integer("batch_size", 32, "training batch size")
-flags.DEFINE_integer("epochs", 80, "number of training epochs")
-flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
-flags.DEFINE_integer("learning_rate_patience", 5, "learning rate decay patience")
-flags.DEFINE_integer("learning_rate_warmup", 500, "steps of linear warmup")
-flags.DEFINE_string("start_training_from", None, "start training from this model")
-flags.DEFINE_float("data_size_fraction", 1.0, "fraction of training data to use")
-flags.DEFINE_float("phoneme_loss_weight", 0.5, "weight of auxiliary phoneme prediction loss")
-flags.DEFINE_float("l2", 1e-7, "weight decay")
-flags.DEFINE_integer("num_workers", 8, "number of workers for dataloaders")
-flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
-flags.DEFINE_string("output_directory", "output", "output directory")
-flags.DEFINE_string("ckpt_directory", "output", "output directory")
-flags.DEFINE_string("log_directory", "logs", "log directory")
-flags.DEFINE_integer("seed", 42, "random seed for data splitting")
-
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-seq_len = 200
-task = "emg2audio"
+FLAGS = load_config(os.path.join("config", "transduction_model.json"))
+writer = get_writer(FLAGS.log_directory, run_id)
 
 
 def test(model, testset, device):
@@ -52,9 +39,9 @@ def test(model, testset, device):
     phoneme_confusion = np.zeros((len(phoneme_inventory), len(phoneme_inventory)))
     with torch.no_grad():
         for batch in tqdm.tqdm(dataloader, "Validation", disable=None):
-            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["emg"]], seq_len)
-            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["raw_emg"]], seq_len * 8)
-            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["session_ids"]], seq_len)
+            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["emg"]], FLAGS.seq_len)
+            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["raw_emg"]], FLAGS.seq_len * 8)
+            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["session_ids"]], FLAGS.seq_len)
 
             pred, phoneme_pred = model(X, X_raw, sess)
 
@@ -194,7 +181,7 @@ def train_model(
     device,
     save_sound_outputs=True,
 ):
-    n_epochs = FLAGS.epochs
+    n_epochs = FLAGS.num_epochs
 
     if FLAGS.data_size_fraction >= 1:
         training_subset = trainset
@@ -222,9 +209,9 @@ def train_model(
     summary(
         model,
         input_data=[
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
         ],
     )
 
@@ -232,9 +219,9 @@ def train_model(
     flops = torchprofile.profile_macs(
         model,
         args=(
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
         ),
     )
     logging.info(f"FLOPs: {flops / 1e9:.4f} G")
@@ -249,7 +236,7 @@ def train_model(
     if save_sound_outputs:
         vocoder = Vocoder()
 
-    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
+    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.weight_decay)
     lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
 
     def set_lr(new_lr):
@@ -271,9 +258,9 @@ def train_model(
             optim.zero_grad()
             schedule_lr(batch_idx)
 
-            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["emg"]], seq_len)
-            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["raw_emg"]], seq_len * 8)
-            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["session_ids"]], seq_len)
+            X = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["emg"]], FLAGS.seq_len)
+            X_raw = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["raw_emg"]], FLAGS.seq_len * 8)
+            sess = combine_fixed_length([t.to(device, non_blocking=True) for t in batch["session_ids"]], FLAGS.seq_len)
 
             pred, phoneme_pred = model(X, X_raw, sess)
 
@@ -343,7 +330,7 @@ def main():
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")),
+            logging.FileHandler(os.path.join(FLAGS.log_directory, f"train_{FLAGS.task}_{run_id}.log")),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
@@ -365,3 +352,7 @@ def main():
         device,
         save_sound_outputs=(FLAGS.hifigan_checkpoint is not None),
     )
+
+
+if __name__ == "__main__":
+    main()

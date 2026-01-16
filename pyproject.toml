@@ -1,6 +1,5 @@
 [project]
 name = "silent_speech"
-version = "0.1.0"
 readme = "README.md"
 
 requires-python = ">=3.10"
@@ -41,7 +40,7 @@ name = "pytorch"
 url = "https://download.pytorch.org/whl/cu126"
 
 [tool.isort]
-py_version = 312
+py_version = 310
 profile = "black"
 line_length = 120
 

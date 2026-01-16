@@ -1,5 +1,6 @@
 # build the lexicon from the dataset
 import argparse
+import os
 
 import tqdm
 
@@ -32,7 +33,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_file",
         type=str,
-        default="gaddy_lexicon.txt",
+        default=os.path.join("KenLM", "gaddy_lexicon.txt"),
         help="Output lexicon file",
     )
     args = parser.parse_args()
@@ -47,6 +48,4 @@ if __name__ == "__main__":
     merged_unigram = train_unigram | dev_unigram | test_unigram
 
     get_lexicon(merged_unigram, output_file=args.output_file)
-    print(
-        f"Lexicon saved to {args.output_file} with {len(merged_unigram)} unique words."
-    )
+    print(f"Lexicon saved to {args.output_file} with {len(merged_unigram)} unique words.")

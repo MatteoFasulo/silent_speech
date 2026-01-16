@@ -1,6 +1,5 @@
 import json
 import os
-from pathlib import Path
 
 import h5py
 import numpy as np
@@ -8,7 +7,19 @@ import scipy
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from data_utils import get_emg_features, load_audio, phoneme_inventory, read_phonemes
+from data_utils import (
+    get_emg_features,
+    load_audio,
+    load_config,
+    phoneme_inventory,
+    read_phonemes,
+)
+
+CONFIG = load_config(os.path.join("config", "transduction_model.json"))
+TEXT_ALIGN_DIR = CONFIG.text_align_directory
+OUT_FILE = os.path.expandvars(CONFIG.h5_path)
+SILENT_DIRS = [os.path.expandvars(d) for d in CONFIG.silent_data_directories]
+VOICED_DIRS = [os.path.expandvars(d) for d in CONFIG.voiced_data_directories]
 
 
 def remove_drift(signal, fs):
@@ -63,10 +74,6 @@ def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_
     x = apply_to_all(subsample, x, 516.79, 1000)
     emg = x
 
-    for c in args.remove_channels:
-        emg[:, int(c)] = 0
-        emg_orig[:, int(c)] = 0
-
     emg_features = get_emg_features(emg)
 
     mfccs = load_audio(
@@ -81,7 +88,7 @@ def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_
     emg_orig = emg_orig[8 : 8 + 8 * emg_features.shape[0], :]
     assert emg.shape[0] == emg_features.shape[0] * 6
 
-    with open(os.path.join(base_dir, f"{index}_info.json")) as f:
+    with open(os.path.join(base_dir, f"{index}_info.json"), "r", encoding="utf-8") as f:
         info = json.load(f)
 
     sess = os.path.basename(base_dir)
@@ -111,7 +118,7 @@ def gather_utterance_records(mode, base_dir):
         mfccs, emg_feats, text, loc, phonemes, raw_emg = load_utterance(
             base_dir, idx, limit_length=False, text_align_directory=TEXT_ALIGN_DIR
         )
-        with open(os.path.join(base_dir, f"{idx}_info.json")) as f:
+        with open(os.path.join(base_dir, f"{idx}_info.json"), "r", encoding="utf-8") as f:
             info = json.load(f)
         raw_emg_len = sum(c[0] for c in info["chunks"])
         rec = {
@@ -144,8 +151,7 @@ def main():
 
     # 2) parallel load into Python structures
     all_records = Parallel(n_jobs=24, verbose=1)(delayed(gather_utterance_records)(mode, d) for mode, d in tasks)
-    # flatten list of lists
-    all_records = [r for rec_list in all_records for r in rec_list]
+    all_records = [r for rec_list in all_records for r in rec_list]  # flatten list
     print(f"Loaded {len(all_records)} utterances into RAM.")
 
     # 3) Create a map of voiced data locations
@@ -167,9 +173,6 @@ def main():
                 rec["parallel_voiced_audio_features"] = voiced_rec["mfccs"]
                 rec["parallel_voiced_emg"] = voiced_rec["emg_feats"]
                 rec["phonemes"] = voiced_rec["phonemes"]
-            # else:
-            # Optionally, you could add a warning here if a silent utterance
-            # has no voiced parallel, though the original code doesn't.
 
     # 5) single HDF5 write
     with h5py.File(OUT_FILE, "w") as h5:
@@ -201,57 +204,8 @@ def main():
             utt_grp.attrs["sentence_index"] = rec["sentence_index"]
             utt_grp.attrs["silent"] = rec["silent"]
 
-    print("All done—HDF5 file written:", OUT_FILE)
+    print("All done, HDF5 file written:", OUT_FILE)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Build HDF5 dataset from raw EMG and audio files.")
-    parser.add_argument(
-        "--remove_channels",
-        nargs="+",
-        default=[],
-        help="List of channel indices to remove from EMG data.",
-    )
-    parser.add_argument(
-        "--silent_data_directories",
-        nargs="+",
-        default=["$DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data/"],
-        help="Directories containing silent EMG data.",
-    )
-    parser.add_argument(
-        "--voiced_data_directories",
-        nargs="+",
-        default=[
-            "$DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data/",
-            "$DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data/",
-        ],
-        help="Directories containing voiced EMG data.",
-    )
-    parser.add_argument(
-        "--testset_file",
-        type=str,
-        default="testset_largedev.json",
-        help="File containing test set indices.",
-    )
-    parser.add_argument(
-        "--text_align_directory",
-        type=str,
-        default="text_alignments",
-        help="Directory containing text alignment files.",
-    )
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        default="emg_dataset.h5",
-        help="Output HDF5 file name.",
-    )
-    args = parser.parse_args()
-    SILENT_DIRS = args.silent_data_directories
-    VOICED_DIRS = args.voiced_data_directories
-    TEXT_ALIGN_DIR = args.text_align_directory
-    out_path = Path(args.output_file).absolute()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FILE = str(out_path)
     main()

@@ -1,30 +1,39 @@
-import argparse
 import os
+import tarfile
 from pathlib import Path
 
+import requests
+from tqdm import tqdm
+
+from data_utils import load_config
+
+CONFIG = load_config(os.path.join("config", "transduction_model.json"))
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Download Silent Speech dataset from Zenodo."
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        required=True,
-        help="Directory to save the downloaded dataset.",
-    )
-    args = parser.parse_args()
-    output_dir = Path(args.output_dir).absolute()
+    output_dir = Path(os.path.expandvars(CONFIG.data_root)).absolute()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     filename = "emg_data.tar.gz"
 
-    # Download the dataset
-    print(f"Downloading Silent Speech dataset to {output_dir}...")
-    os.system(
-        f"wget -c https://zenodo.org/records/4064409/files/{filename} -O {os.path.join(output_dir, filename)}"
-    )
-    print("Download completed.")
+    # Check if the dataset is already downloaded
+    if not os.path.exists(os.path.join(output_dir, filename)):
+        # Download the dataset
+        print(f"Downloading Silent Speech dataset to {output_dir}...")
+        response = requests.get(f"https://zenodo.org/records/4064409/files/{filename}", stream=True, timeout=60)
+        # Sizes in bytes.
+        total_size = int(response.headers.get("content-length", 0))
+        block_size = 1024
+        with tqdm(total=total_size, unit="B", unit_scale=True) as progress_bar:
+            with open(os.path.join(output_dir, filename), "wb") as file:
+                for data in response.iter_content(block_size):
+                    progress_bar.update(len(data))
+                    file.write(data)
+        print("Download completed.")
 
     # Extract the dataset
-    os.system(f"tar -xvzf {os.path.join(output_dir, filename)} -C {output_dir}")
+    print("Extracting the dataset...")
+    if tarfile.is_tarfile(os.path.join(output_dir, filename)):
+        with tarfile.open(os.path.join(output_dir, filename), "r:gz") as tar:
+            for member in tqdm(tar.getmembers(), total=len(tar.getmembers()), desc="Extracting files"):
+                tar.extract(member=member, path=output_dir)
     print("Extraction completed.")

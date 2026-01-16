@@ -9,41 +9,17 @@ import torch
 import torch.nn.functional as F
 import torchprofile
 import tqdm
-from absl import flags
 from torch import nn
 from torchaudio.models.decoder import ctc_decoder
 from torchinfo import summary
 
-from adapted_emg_transformer import EMGTransformer
-
-# from architecture import Model as EMGTransformer
-from data_utils import combine_fixed_length, decollate_tensor
+from architecture import EMGTransformer
+from data_utils import combine_fixed_length, decollate_tensor, get_writer, load_config
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 
-FLAGS = flags.FLAGS
-flags.DEFINE_boolean("debug", False, "debug")
-flags.DEFINE_boolean("dev", False, "evaluate dev instead of test")
-flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
-flags.DEFINE_string("ckpt_directory", "output", "where to save models and outputs")
-flags.DEFINE_integer("batch_size", 32, "training batch size")
-flags.DEFINE_integer("num_epochs", 200, "number of epochs")
-flags.DEFINE_float("learning_rate", 5e-4, "learning rate")
-flags.DEFINE_integer("learning_rate_patience", 10, "learning rate decay patience")
-flags.DEFINE_integer("learning_rate_warmup", 1000, "steps of linear warmup")
-flags.DEFINE_string("start_training_from", None, "start training from this model")
-flags.DEFINE_float("l2", 0, "weight decay")
-flags.DEFINE_integer("eval_interval", 5, "evaluate every n epochs")
-flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
-flags.DEFINE_integer("num_workers", 8, "number of workers for dataloaders")
-flags.DEFINE_boolean("freeze_blocks", False, "freeze multi-head attention blocks")
-flags.DEFINE_string("lm_directory", "KenLM", "directory with language model files")
-flags.DEFINE_boolean("verbose", False, "print verbose output")
-flags.DEFINE_string("log_directory", "logs", "log directory")
-flags.DEFINE_integer("seed", 42, "random seed for data splitting")
-
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-seq_len = 200
-task = "emg2text"
+FLAGS = load_config(os.path.join("config", "recognition_model.json"))
+writer = get_writer(FLAGS.log_directory, run_id)
 
 
 def test(model, dset, device, beam_size: int = 150):
@@ -120,7 +96,7 @@ def train_model(model, trainset, devset, device):
         model.load_state_dict(state_dict, strict=False)
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
-    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.l2)
+    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.weight_decay)
     # lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
     lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
 
@@ -142,9 +118,9 @@ def train_model(model, trainset, devset, device):
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
             schedule_lr(batch_idx)
 
-            X = combine_fixed_length(example["emg"], seq_len).to(device)
-            X_raw = combine_fixed_length(example["raw_emg"], seq_len * 8).to(device)
-            sess = combine_fixed_length(example["session_ids"], seq_len).to(device)
+            X = combine_fixed_length(example["emg"], FLAGS.seq_len).to(device)
+            X_raw = combine_fixed_length(example["raw_emg"], FLAGS.seq_len * 8).to(device)
+            sess = combine_fixed_length(example["session_ids"], FLAGS.seq_len).to(device)
 
             pred = model(X, X_raw, sess)
             pred = F.log_softmax(pred, dim=-1)
@@ -210,9 +186,9 @@ def evaluate_saved():
     summary(
         model,
         input_data=[
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
         ],
     )
     print(f"Loaded model from {FLAGS.evaluate_saved}")
@@ -226,7 +202,7 @@ def main():
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(os.path.join(FLAGS.log_directory, f"train_{task}_{run_id}.log")),
+            logging.FileHandler(os.path.join(FLAGS.log_directory, f"train_{FLAGS.task}_{run_id}.log")),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
@@ -248,9 +224,9 @@ def main():
     summary(
         model,
         input_data=[
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
         ],
     )
 
@@ -258,9 +234,9 @@ def main():
     flops = torchprofile.profile_macs(
         model,
         (
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
-            torch.randn(1, FLAGS.img_size, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
+            torch.randn(1, FLAGS.full_seq_len, FLAGS.in_chans).to(device),
         ),
     )
     logging.info(f"FLOPs: {flops / 1e9:.4f} G")
@@ -272,3 +248,21 @@ def main():
     logging.info("Test WER: %.2f%%", test_wer * 100)
     writer.add_scalar("test/wer", test_wer, 0)
     return
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train or evaluate the recognition model.")
+    parser.add_argument(
+        "--evaluate_saved",
+        type=str,
+        default=None,
+        help="Path to a saved model checkpoint to evaluate on the test set.",
+    )
+    args = parser.parse_args()
+    if args.evaluate_saved is not None:
+        FLAGS.evaluate_saved = args.evaluate_saved
+        evaluate_saved()
+    else:
+        main()

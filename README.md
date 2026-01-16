@@ -18,7 +18,6 @@ Compared to the original code several changes have been made to improve usabilit
 - Instead of building the dataset on-the-fly during training each time, a script has been added to build the HDF5 dataset once and save it to disk for faster loading during training. This can save a significant amount of time during training depending on your hardware.
 - Additional flags to resume training from a checkpoint have been added (in this way you can continue training from a pre-trained model to check performance improvements over downstream tasks).
 - The DeepSpeech library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models due to compatibility issues (mainly associated with CPU architecture incompatibilities).
-- A shell script has been added to simplify evaluation of multiple models in a directory by saving WER results to a CSV file.
 - The CTC beam search decoder has been changed to use torchaudio's built-in decoder instead of the original ctcdecode library due to compatibility issues.
   - Additional instructions have been added to download the KenLM language model and generate the lexicon needed for decoding.
 - Tensorboard logging has been added to monitor training progress.
@@ -33,20 +32,11 @@ There are some additional improvements that could be made to further improve usa
 
 ## Data
 
-The EMG and audio data can be downloaded from <https://doi.org/10.5281/zenodo.4064408>.  The scripts expect the data to be located in a `emg_data` subdirectory by default, but the location can be overridden with flags (see the top of `read_emg.py`).
+The EMG and audio data can be downloaded from <https://doi.org/10.5281/zenodo.4064408>.  The scripts expect the data to be located in a `emg_data` subdirectory by default, but the location can be overridden with flags (see the data download script section below).
 
 Force-aligned phonemes from the Montreal Forced Aligner have been included as a git submodule, which must be updated using the process described in "Environment Setup" below.
 Note that there will not be an exception if the directory is not found, but logged phoneme prediction accuracies reporting 100% is a sign that the directory has not been loaded correctly.
-
-### Data Download Script
-
-For convenience, a script is provided to download the data directly into the expected directory structure.
-Before running the script, set the `$DATA_PATH` environment variable to point to your data directory.
-Then run:
-
-```bash
-python download_data.py --output_dir $DATA_PATH/datasets/Gaddy/
-```
+>**Note**: A script to download the data directly into the expected directory structure is provided below.
 
 ## Environment Setup
 
@@ -67,28 +57,40 @@ git submodule update
 tar -xvzf text_alignments/text_alignments.tar.gz
 ```
 
-Due to compatibility issues, `DeepSpeech` library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models. Such models will be downloaded automatically when running the evaluation script and cached in your Hugging Face cache directory.
+>**Note**: Due to compatibility issues, `DeepSpeech` library has been deprecated in favor of SpeechBrain for ASR evaluation using Wav2Vec2 models. Such models will be downloaded automatically when running the evaluation script and cached in your Hugging Face cache directory.
+
+### Data Download Script
+
+For convenience, a script is provided to download the data directly into the expected directory structure.
+Before running the script, check the configuration files in the `config` directory to ensure the data paths are set correctly. You will need to change the `$DATA_PATH` variable to your desired data directory path or bind it to a valid path in your environment.
+Then run:
+
+```bash
+python download_data.py
+```
 
 ### Audio Cleaning
 
 This is an optional step. Training will be faster if you re-run the audio cleaning, which will save re-sampled audio so it doesn't have to be re-sampled every training run.
-In order to run the cleaning script, use the following command, replacing `$DATA_PATH` with your data directory path:
+In order to run the cleaning script, use the following command:
 
 ```bash
-python data_collection/clean_audio.py $DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data $DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data $DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data
+python data_collection/clean_audio.py
 ```
 
 this script will run in parallel and may take a few minutes to complete, depending on your hardware. It will save cleaned audio files with the correct sample rate in the same directories as the original audio files, with filenames prefixed by `cleaned_`.
+>**Note**: If you do not run this step, the code will re-sample the original audio files on-the-fly during training, which will require more time as the audio files will be resampled on CPU creating many CPU-GPU transfers during training.
 
 ### Building HDF5 Dataset
 
+In the original code, the dataset was built on-the-fly during training each time, which can be time-consuming.
 To build the HDF5 dataset from the raw EMG and audio files, run the following command, replacing the output file path as needed:
 
 ```bash
-python build_hdf5.py --output_file $DATA_PATH/datasets/Gaddy/h5/emg_dataset.h5
+python build_hdf5.py
 ```
 
-in this way, the dataset only needs to be built once avoiding the original code that built the dataset on-the-fly during training each time.
+in this way, the dataset only needs to be built once and can be loaded quickly during training.
 
 ## Pre-trained Models
 
@@ -100,48 +102,20 @@ Pre-trained models for the vocoder and transduction model are available at
 To train an EMG to speech feature transduction model, use the following command:
 
 ```bash
-python transduction_model.py --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory "./models/transduction_model/" --start_training_from <your_checkpoint_path> --seed 42
+python transduction_model.py
 ```
 
-where `hifigan_finetuned/checkpoint` is a trained HiFi-GAN generator model (optional).
->Note: The `--start_training_from` flag is optional and it was added to continue training from a pre-trained model. You can remove this flag to train from scratch.
+all the training parameters can be adjusted in the `config/transduction_model.json` file. You can specify an output directory for saving models and logs in the configuration file. You can also start the training from a pre-trained model.
 
-At the end of training, an ASR evaluation will be run on the validation set if a HiFi-GAN model is provided.
+At the end of training, an ASR evaluation will be run on the validation set if a HiFi-GAN model checkpoint is provided.
 
 To evaluate a model on the test set, use
 
 ```bash
-python evaluate.py --models ./models/transduction_model/model.pt --hifigan_checkpoint hifigan_finetuned/checkpoint --output_directory evaluation_output --testset_file testset_origdev.json
+python evaluate.py --model ./models/transduction_model/model.pt
 ```
 
->Note: The `--testset_file` flag is set to `testset_origdev.json` by default, which will run the evaluation on the original development set.
-
-A shell script is also provided to simplify evaluation. To evaluate all the models in a directory, use
-
-```bash
-sh eval.sh ./models/transduction_model wer_results.csv
-```
-
-which will save WER results for each model in the specified directory to `wer_results.csv`.
-
-Then, the following one-liner can be used to print the results from the CSV file using pandas to report mean and std dev of WER results:
-
-```python
-python -c "import pandas as pd; df=pd.read_csv('wer_results.csv'); df['wer'] = pd.to_numeric(df['wer'], errors='coerce'); sliced_df=df[df['model'].str.contains('last')].dropna(); print(sliced_df); print(f'\nMean WER: {sliced_df[\"wer\"].mean():.4f}\nStd WER: {sliced_df[\"wer\"].std():.4f}')"
-```
-
-## HiFi-GAN Training
-
-The HiFi-GAN model is fine-tuned from a multi-speaker model to the voice of this dataset.  Spectrograms predicted from the transduction model are used as input for fine-tuning instead of gold spectrograms. To generate the files needed for HiFi-GAN fine-tuning, run the following with a trained model checkpoint:
-
-```bash
-python make_vocoder_trainset.py --model ./models/transduction_model/model.pt --output_directory hifigan_training_files
-```
-
-The resulting files can be used for fine-tuning using the instructions in the hifi-gan repository.
-The pre-trained model was fine-tuned for 75,000 steps, starting from the `UNIVERSAL_V1` model provided by the HiFi-GAN repository.
-Although the HiFi-GAN is technically fine-tuned for the output of a specific transduction model, we found it to transfer quite well and shared a single HiFi-GAN for most experiments.
->Note: In TinyMyo, the HiFi-GAN checkpoint used was the same provided in the repository without further fine-tuning.
+test set file can be changed in the configuration file.
 
 # Silent Speech Recognition
 
@@ -161,7 +135,9 @@ cd KenLM
 python download_LM.py --output_directory .
 ```
 
-The lexicon can be generated using the provided script `get_lexicon.py`:
+in this way, the language model will be downloaded to the current directory under the `lm.bin` file.
+
+After downloading the language model, you will need to generate the lexicon file used for decoding. The lexicon can be generated using the provided script `get_lexicon.py`:
 
 ```bash
 python get_lexicon.py
@@ -173,12 +149,12 @@ Pre-trained model weights can be downloaded from <https://doi.org/10.5281/zenodo
 
 To train a model, run
 
-```
-python recognition_model.py --output_directory "./models/recognition_model/"
+```bash
+python recognition_model.py
 ```
 
 To run a test set evaluation on a saved model, use
 
-```
+```bash
 python recognition_model.py --evaluate_saved "./models/recognition_model/model.pt"
 ```

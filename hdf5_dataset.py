@@ -7,31 +7,14 @@ from copy import copy
 import h5py
 import numpy as np
 import torch
-from absl import flags
 from torch.utils.data import Dataset
 
-from data_utils import TextTransform
+from data_utils import TextTransform, load_config
 
-FLAGS = flags.FLAGS
-flags.DEFINE_list(
-    "silent_data_directories",
-    ["$DATA_PATH/datasets/Gaddy/emg_data/silent_parallel_data/"],
-    "silent data locations",
-)
-flags.DEFINE_list(
-    "voiced_data_directories",
-    [
-        "$DATA_PATH/datasets/Gaddy/emg_data/voiced_parallel_data/",
-        "$DATA_PATH/datasets/Gaddy/emg_data/nonparallel_data/",
-    ],
-    "voiced data locations",
-)
-flags.DEFINE_string("testset_file", "testset_largedev.json", "file with testset indices")
-flags.DEFINE_string(
-    "h5_path",
-    "$DATA_PATH/datasets/Gaddy/h5/emg_dataset.h5",
-    "HDF5 file",
-)
+FLAGS = load_config(os.path.join("config", "transduction_model.json"))
+H5_PATH = os.path.expandvars(FLAGS.h5_path)
+SILENT_DIRS = [os.path.expandvars(d) for d in FLAGS.silent_data_directories]
+VOICED_DIRS = [os.path.expandvars(d) for d in FLAGS.voiced_data_directories]
 
 
 class EMGDirectory(object):
@@ -55,27 +38,27 @@ class H5EmgDataset(Dataset):
         self.no_normalizers = no_normalizers
 
         # load test/dev lists
-        with open(FLAGS.testset_file) as f:
+        with open(FLAGS.testset_file, "r", encoding="utf-8") as f:
             split = json.load(f)
         dev_set = {tuple(x) for x in split["dev"]}
         test_set = {tuple(x) for x in split["test"]}
 
         # build directories list
         dirs = []
-        with h5py.File(FLAGS.h5_path, "r") as h5:
+        with h5py.File(H5_PATH, "r") as h5:
             # silent sessions
             if "silent" in h5:
-                for sd in FLAGS.silent_data_directories:
+                for sd in SILENT_DIRS:
                     for sess in h5["silent"]:
                         dirs.append(EMGDirectory(len(dirs), os.path.join(sd, sess), True))
 
-            has_silent = len(FLAGS.silent_data_directories) > 0 and "silent" in h5 and len(h5["silent"]) > 0
+            has_silent = len(SILENT_DIRS) > 0 and "silent" in h5 and len(h5["silent"]) > 0
 
             # voiced sessions
             if "voiced" in h5:
                 # Create a map from session name to full path
                 voiced_session_paths = {}
-                for vd in FLAGS.voiced_data_directories:
+                for vd in VOICED_DIRS:
                     if os.path.exists(vd):
                         for sess in os.listdir(vd):
                             if os.path.isdir(os.path.join(vd, sess)):
@@ -94,7 +77,7 @@ class H5EmgDataset(Dataset):
 
         # example_indices logic
         example_indices = []
-        with h5py.File(FLAGS.h5_path, "r") as h5:
+        with h5py.File(H5_PATH, "r") as h5:
             for d in dirs:
                 mode = "silent" if d.silent else "voiced"
                 if mode not in h5:
@@ -136,7 +119,7 @@ class H5EmgDataset(Dataset):
         if not self.no_normalizers:
             self.mfcc_norm, self.emg_norm = pickle.load(open(FLAGS.normalizers_file, "rb"))
 
-        with h5py.File(FLAGS.h5_path, "r") as h5:
+        with h5py.File(H5_PATH, "r") as h5:
             d, utt = self.example_indices[0]
             mode = "silent" if d.silent else "voiced"
             grp = h5[mode][d.name][utt]
@@ -157,7 +140,7 @@ class H5EmgDataset(Dataset):
 
     def __getitem__(self, i):
         if self._h5 is None:
-            self._h5 = h5py.File(FLAGS.h5_path, "r", swmr=True)
+            self._h5 = h5py.File(H5_PATH, "r", swmr=True)
 
         d, utt = self.example_indices[i]
         grp = self._h5["silent" if d.silent else "voiced"][d.name][utt]
@@ -261,7 +244,7 @@ class SizeAwareSampler(torch.utils.data.Sampler):
         # ensure HDF5 is open
         if self.dataset._h5 is None:
             # open in read‑only SWMR mode
-            self.dataset._h5 = h5py.File(FLAGS.h5_path, "r", swmr=True)
+            self.dataset._h5 = h5py.File(H5_PATH, "r", swmr=True)
         self.batches = self._create_batches()
 
     def _create_batches(self):
