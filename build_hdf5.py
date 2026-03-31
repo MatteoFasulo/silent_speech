@@ -1,6 +1,6 @@
 import json
 import os
-
+from pathlib import Path
 import h5py
 import numpy as np
 import scipy
@@ -21,38 +21,55 @@ OUT_FILE = os.path.expandvars(CONFIG.h5_path)
 SILENT_DIRS = [os.path.expandvars(d) for d in CONFIG.silent_data_directories]
 VOICED_DIRS = [os.path.expandvars(d) for d in CONFIG.voiced_data_directories]
 
+# Ensure output directory exists
+Path(OUT_FILE).parent.mkdir(parents=True, exist_ok=True)
 
-def remove_drift(signal, fs):
+
+def remove_drift(signal: np.ndarray, fs: float) -> np.ndarray:
+    """
+    Applies a high-pass Butterworth filter to remove low-frequency drift from the signal.
+    """
     b, a = scipy.signal.butter(3, 2, "highpass", fs=fs)
     return scipy.signal.filtfilt(b, a, signal)
 
 
-def notch(signal, freq, sample_frequency):
+def notch(signal: np.ndarray, freq: float, sample_frequency: float) -> np.ndarray:
+    """
+    Applies a notch filter to the signal at the specified frequency.
+    """
     b, a = scipy.signal.iirnotch(freq, 30, sample_frequency)
     return scipy.signal.filtfilt(b, a, signal)
 
 
-def notch_harmonics(signal, freq, sample_frequency):
+def notch_harmonics(signal: np.ndarray, freq: float, sample_frequency: float) -> np.ndarray:
+    """
+    Applies a series of notch filters to the signal at multiples of the specified frequency.
+    """
     for harmonic in range(1, 8):
         signal = notch(signal, freq * harmonic, sample_frequency)
     return signal
 
 
-def subsample(signal, new_freq, old_freq):
+def subsample(signal: np.ndarray, new_freq: float, old_freq: float) -> np.ndarray:
+    """
+    Resamples the signal from old_freq to new_freq using linear interpolation.
+    """
     times = np.arange(len(signal)) / old_freq
     sample_times = np.arange(0, times[-1], 1 / new_freq)
     result = np.interp(sample_times, times, signal)
     return result
 
 
-def apply_to_all(function, signal_array, *args, **kwargs):
+def apply_to_all(function: callable, signal_array: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """Applies a function to each column of a 2D signal array in parallel."""
     results = []
     for i in range(signal_array.shape[1]):
         results.append(function(signal_array[:, i], *args, **kwargs))
     return np.stack(results, 1)
 
 
-def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_directory=None):
+def load_utterance(base_dir: str, index: int, limit_length: bool = False, debug: bool = False, text_align_directory: str = None):
+    """Loads and processes a single utterance given its base directory and index."""
     index = int(index)
     raw_emg = np.load(os.path.join(base_dir, f"{index}_emg.npy"))
     before = os.path.join(base_dir, f"{index-1}_emg.npy")
@@ -108,7 +125,7 @@ def load_utterance(base_dir, index, limit_length=False, debug=False, text_align_
     )
 
 
-def gather_utterance_records(mode, base_dir):
+def gather_utterance_records(mode: str, base_dir: str) -> list:
     """Return a list of dicts, one per utterance in this directory."""
     records = []
     for fname in os.listdir(base_dir):

@@ -202,6 +202,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Do not track generated files and directories
 .vscode/
 __pycache__/
 emg_data/
@@ -210,6 +211,7 @@ model_checkpoints/
 evaluation_output/
 hifigan_finetuned/
 output/
+logs/
 deepspeech-0.7.0-models.pbmm
 deepspeech-0.7.0-models.scorer
 lm.binary
@@ -217,12 +219,4 @@ normalizers.pkl
 runs/
 *.ipynb
 *.bin
-
-# Ignore text_alignment data directory
-text_alignment/
-
-# Ignore pretrained models (Hugging Face ASR)
-pretrained_models/
-
-# Ignore HiFi-GAN training files
-hifigan_training_files/
+eval_results/

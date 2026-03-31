@@ -16,7 +16,7 @@ SILENT_DIRS = [os.path.expandvars(d) for d in CONFIG.silent_data_directories]
 VOICED_DIRS = [os.path.expandvars(d) for d in CONFIG.voiced_data_directories]
 
 
-def clean_directory(directory):
+def clean_directory(directory: str) -> bool:
     silence, rate = sf.read(os.path.join(directory, "0_audio.flac"))
 
     audio_file_names = []

@@ -1,26 +1,32 @@
+import argparse
 import logging
 import os
 import sys
 from datetime import datetime
+from typing import List
 
 import numpy as np
 import soundfile as sf
+import matplotlib.pyplot as plt
+from numba import jit
+import jiwer
+
 import torch
 import torch.nn.functional as F
 import torchprofile
 import tqdm
 from torchinfo import summary
+import wandb
+from speechbrain.inference.ASR import EncoderASR
 
-# from architecture import Model as EMGTransformer
-from align import align_from_distances
 from architecture import EMGTransformer
-from asr_evaluation import evaluate
 from data_utils import (
     combine_fixed_length,
     decollate_tensor,
     get_writer,
     load_config,
     phoneme_inventory,
+    print_confusion,
 )
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 from vocoder import Vocoder
@@ -30,7 +36,129 @@ FLAGS = load_config(os.path.join("config", "transduction_model.json"))
 writer = get_writer(FLAGS.log_directory, run_id)
 
 
-def test(model, testset, device):
+def evaluate(testset: H5EmgDataset, audio_directory: str) -> None:
+    """
+    Evaluates the model by transcribing generated audio using a pre-trained ASR model
+    and calculating the Word Error Rate (WER).
+
+    Args:
+        testset (H5EmgDataset): The dataset to evaluate on.
+        audio_directory (str): The directory where the generated audio files are stored.
+    """
+    predictions = []
+    targets = []
+
+    # Try to find the model in the local HF cache to support offline HPC environments
+    model_source = "speechbrain/asr-wav2vec2-librispeech"
+    cache_base = os.path.expanduser("~/.cache/huggingface/hub")
+
+    def get_local_path(repo_id):
+        repo_dir = os.path.join(cache_base, f"models--{repo_id.replace('/', '--')}")
+        if os.path.exists(repo_dir):
+            snapshot_dir = os.path.join(repo_dir, "snapshots")
+            if os.path.exists(snapshot_dir):
+                snapshots = os.listdir(snapshot_dir)
+                if snapshots:
+                    return os.path.join(snapshot_dir, snapshots[0])
+        return repo_id
+
+    model_source = get_local_path(model_source)
+
+    asr = EncoderASR.from_hparams(
+        source=model_source,
+        run_opts={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+        overrides={"wav2vec2": {"source": get_local_path("facebook/wav2vec2-large-960h-lv60-self")}}
+    )
+    if asr:
+        for i, datapoint in enumerate(tqdm.tqdm(testset, "Evaluate outputs", disable=None)):
+            text = asr.transcribe_file(os.path.join(audio_directory, f"example_output_{i}.wav"))
+
+            pred_text = testset.text_transform.clean_text(text)
+            target_text = testset.text_transform.clean_text(datapoint["text"])
+
+            predictions.append(pred_text)
+            targets.append(target_text)
+
+        for i, (targ, _) in enumerate(zip(targets, predictions)):
+            if targ == "":
+                del targets[i]
+                del predictions[i]
+
+        for i in range(len(targets)):
+            logging.debug(f"Target: {targets[i]}")
+            logging.debug(f"Prediction: {predictions[i]}")
+            logging.debug("---" * 50)
+        logging.info(f"WER: {jiwer.wer(targets, predictions)}")
+
+@jit(nopython=True)
+def time_warp(costs: np.ndarray) -> np.ndarray:
+    """
+    Computes the Dynamic Time Warping (DTW) cost matrix for the given distance matrix.
+
+    Args:
+        costs: A 2D array of shape (seq1_len, seq2_len) containing pairwise distances.
+
+    Returns:
+        dtw: A 2D array of the same shape as costs, where dtw[i, j] is the minimum cumulative cost
+    """
+    dtw = np.zeros_like(costs)
+    dtw[0, 1:] = np.inf
+    dtw[1:, 0] = np.inf
+    eps = 1e-4
+    for i in range(1, costs.shape[0]):
+        for j in range(1, costs.shape[1]):
+            dtw[i, j] = costs[i, j] + min(
+                dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1]
+            )
+    return dtw
+
+
+def align_from_distances(distance_matrix: np.ndarray, debug: bool = False) -> List[int]:
+    """
+    Computes an alignment between two sequences given a distance matrix using Dynamic Time Warping (DTW).
+
+    Args:
+        distance_matrix: A 2D array of shape (seq1_len, seq2_len) containing pairwise distances.
+        debug: If True, will display a visualization of the alignment.
+
+    Returns:
+        A list of indices where the i-th element is the index in the second sequence that best aligns with the i-th element of the first sequence.
+    """
+    # for each position in spectrum 1, returns best match position in spectrum2
+    # using monotonic alignment
+    dtw = time_warp(distance_matrix)
+
+    i = distance_matrix.shape[0] - 1
+    j = distance_matrix.shape[1] - 1
+    results = [0] * distance_matrix.shape[0]
+    while i > 0 and j > 0:
+        results[i] = j
+        i, j = min(
+            [(i - 1, j), (i, j - 1), (i - 1, j - 1)], key=lambda x: dtw[x[0], x[1]]
+        )
+
+    if debug:
+        visual = np.zeros_like(dtw)
+        visual[range(len(results)), results] = 1
+        plt.matshow(visual)
+        plt.show()
+
+    return results
+
+
+def test(model: torch.nn.Module, testset: H5EmgDataset, device: str) -> tuple[float, float, np.ndarray]:
+    """
+    Performs validation on the provided test set, calculating loss and phoneme accuracy.
+
+    Args:
+        model (torch.nn.Module): The model to evaluate.
+        testset (H5EmgDataset): The dataset to use for validation.
+        device (str): The device (cpu or cuda) to run evaluation on.
+
+    Returns:
+        tuple[float, float, np.ndarray]: A tuple containing mean loss, mean phoneme accuracy,
+                                         and the phoneme confusion matrix.
+    """
     model.eval()
 
     dataloader = torch.utils.data.DataLoader(testset, batch_size=32, collate_fn=testset.collate_raw)
@@ -58,7 +186,25 @@ def test(model, testset, device):
     )
 
 
-def save_output(model, datapoint, filename, device, audio_normalizer, vocoder):
+def save_output(
+    model: torch.nn.Module,
+    datapoint: dict,
+    filename: str,
+    device: str,
+    audio_normalizer: object,
+    vocoder: Vocoder,
+) -> None:
+    """
+    Generates audio from a model prediction for a single datapoint and saves it to a file.
+
+    Args:
+        model (torch.nn.Module): The model used for inference.
+        datapoint (dict): The sample to use for generating audio.
+        filename (str): The output filename to save the audio.
+        device (str): The device to use for computation.
+        audio_normalizer (object): Object used for inverse normalization of MFCC features.
+        vocoder (Vocoder): The vocoder used to generate wav files from features.
+    """
     model.eval()
     with torch.no_grad():
         sess = datapoint["session_ids"].to(device=device).unsqueeze(0)
@@ -77,7 +223,24 @@ def save_output(model, datapoint, filename, device, audio_normalizer, vocoder):
     model.train()
 
 
-def get_aligned_prediction(model, datapoint, device, audio_normalizer):
+def get_aligned_prediction(
+    model: torch.nn.Module,
+    datapoint: dict,
+    device: str,
+    audio_normalizer: object,
+) -> torch.Tensor:
+    """
+    Gets model predictions and optionally aligns them with target features using DTW if silent.
+
+    Args:
+        model (torch.nn.Module): The model to use.
+        datapoint (dict): The data sample.
+        device (str): The device to run calculation on.
+        audio_normalizer (object): Normalizer for scaling features back.
+
+    Returns:
+        torch.Tensor: The predicted (and possibly aligned) audio features.
+    """
     model.eval()
     with torch.no_grad():
         silent = datapoint["silent"]
@@ -102,12 +265,26 @@ def get_aligned_prediction(model, datapoint, device, audio_normalizer):
 
 
 def dtw_loss(
-    predictions,
-    phoneme_predictions,
-    example,
+    predictions: torch.Tensor,
+    phoneme_predictions: torch.Tensor,
+    example: dict,
     phoneme_eval: bool = False,
     phoneme_confusion: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, float]:
+    """
+    Computes a loss between prediction and audio using Dynamic Time Warping (DTW) for silent speech.
+    Also calculates phoneme classification accuracy for both silent and voiced speech.
+
+    Args:
+        predictions (torch.Tensor): Audio feature predictions from the model.
+        phoneme_predictions (torch.Tensor): Phoneme class log-probabilities or logits.
+        example (dict): A batch from the dataloader containing ground truth.
+        phoneme_eval (bool, optional): Whether to calculate confusion matrix and accuracy.
+        phoneme_confusion (np.ndarray, optional): Accumulator of phoneme confusion.
+
+    Returns:
+        tuple[torch.Tensor, float]: Mean loss per sequence frame and phoneme accuracy.
+    """
     device = predictions.device
 
     predictions = decollate_tensor(predictions, example["lengths"])
@@ -176,11 +353,23 @@ def dtw_loss(
 
 
 def train_model(
-    trainset,
-    devset,
-    device,
-    save_sound_outputs=True,
-):
+    trainset: H5EmgDataset,
+    devset: H5EmgDataset,
+    device: str,
+    save_sound_outputs: bool = True,
+) -> torch.nn.Module:
+    """
+    Sets up the model, optimizer, scheduler, and runs the training loop over multiple epochs.
+
+    Args:
+        trainset (H5EmgDataset): Dataset for training.
+        devset (H5EmgDataset): Dataset for validation.
+        device (str): Device to run training on.
+        save_sound_outputs (bool): Whether to generate audio samples and evaluate them during training.
+
+    Returns:
+        torch.nn.Module: The trained model with best validation loss.
+    """
     n_epochs = FLAGS.num_epochs
 
     if FLAGS.data_size_fraction >= 1:
@@ -199,9 +388,16 @@ def train_model(
 
     n_phones = len(phoneme_inventory)
     model = EMGTransformer(
-        devset.num_features,
-        devset.num_speech_features,
-        n_phones,
+        num_features=devset.num_features,
+        num_outs=devset.num_speech_features,
+        num_aux_outs=n_phones,
+        in_chans=FLAGS.in_chans,
+        embed_dim=FLAGS.embed_dim,
+        n_layer=FLAGS.num_layers,
+        n_head=FLAGS.num_heads,
+        mlp_ratio=FLAGS.mlp_ratio,
+        attn_drop=FLAGS.dropout,
+        proj_drop=FLAGS.dropout,
         freeze_blocks=FLAGS.freeze_blocks,
     ).to(device)
 
@@ -229,29 +425,35 @@ def train_model(
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
         state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        print(f"Missing keys when loading model: {missing_keys}")
+        print(f"Unexpected keys when loading model: {unexpected_keys}")
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
     vocoder = None
     if save_sound_outputs:
-        vocoder = Vocoder()
+        vocoder = Vocoder(device=device)
 
     optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.weight_decay)
     lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
 
-    def set_lr(new_lr):
+    def set_lr(new_lr: float):
         for param_group in optim.param_groups:
             param_group["lr"] = new_lr
 
     target_lr = FLAGS.learning_rate
 
-    def schedule_lr(iteration):
+    def schedule_lr(iteration: int):
         iteration = iteration + 1
         if iteration <= FLAGS.learning_rate_warmup:
             set_lr(iteration * target_lr / FLAGS.learning_rate_warmup)
 
     batch_idx = 0
     best_val_loss = float("inf")
+
+    if FLAGS.wandb_logging:
+        wandb.init(project=FLAGS.wandb_project, config=FLAGS, name=f"{FLAGS.task}_{run_id}", dir=FLAGS.wandb_save_dir)
+
     for epoch_idx in range(n_epochs):
         losses = []
         for batch in tqdm.tqdm(dataloader, "Train step", disable=None):
@@ -267,6 +469,8 @@ def train_model(
             loss, _ = dtw_loss(pred, phoneme_pred, batch)
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
+            if FLAGS.wandb_logging:
+                wandb.log({"train/loss_step": loss.item()}, step=batch_idx)
 
             loss.backward()
             optim.step()
@@ -281,6 +485,14 @@ def train_model(
         writer.add_scalar("train/lr", current_lr, epoch_idx)
         writer.add_scalar("val/loss", val, epoch_idx)
         writer.add_scalar("val/phoneme_acc", phoneme_acc, epoch_idx)
+        if FLAGS.wandb_logging:
+            wandb.log({
+                "train/loss_epoch": train_loss,
+                "val/loss": val,
+                "val/phoneme_acc": phoneme_acc,
+                "lr": current_lr,
+                "epoch": epoch_idx
+            })
         logging.info(
             f"finished epoch {epoch_idx+1} - validation loss: {val:.4f} training loss: {train_loss:.4f} phoneme accuracy: {phoneme_acc*100:.2f}"
         )
@@ -324,7 +536,10 @@ def train_model(
     return model
 
 
-def main():
+def main() -> None:
+    """
+    Main entry point for training the EMG to audio transduction model.
+    """
     os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
@@ -355,4 +570,76 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Train or evaluate the EMG to audio transduction model.")
+    parser.add_argument(
+        "--evaluate_saved",
+        type=str,
+        default=None,
+        help="Path to a saved model checkpoint to evaluate on the test set.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Optional output directory for evaluation. Defaults to FLAGS.output_directory.",
+    )
+    args = parser.parse_args()
+
+    if args.evaluate_saved is not None:
+        # Override output directory if provided
+        if args.output_dir is not None:
+            FLAGS.output_directory = args.output_dir
+
+        os.makedirs(FLAGS.output_directory, exist_ok=True)
+        logging.basicConfig(
+            handlers=[
+                logging.FileHandler(os.path.join(FLAGS.output_directory, "eval_log.txt"), "w"),
+                logging.StreamHandler(),
+            ],
+            level=logging.INFO,
+            format="%(message)s",
+        )
+
+        testset = H5EmgDataset(dev=FLAGS.dev, test=not FLAGS.dev)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        state_dict = torch.load(args.evaluate_saved, map_location=device, weights_only=False)["state_dict"]
+        # Clean state dict if it comes from a PL checkpoint or has "model." prefix
+        state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
+
+        n_phones = len(phoneme_inventory)
+        model = EMGTransformer(
+            num_features=testset.num_features,
+            num_outs=testset.num_speech_features,
+            num_aux_outs=n_phones,
+            in_chans=FLAGS.in_chans,
+            embed_dim=FLAGS.embed_dim,
+            n_layer=FLAGS.num_layers,
+            n_head=FLAGS.num_heads,
+            mlp_ratio=FLAGS.mlp_ratio,
+            attn_drop=FLAGS.dropout,
+            proj_drop=FLAGS.dropout,
+        ).to(device)
+        model.load_state_dict(state_dict, strict=True)
+
+        logging.info(f"Evaluating model from {args.evaluate_saved}")
+        _, _, confusion = test(model, testset, device)
+
+        # Save and print confusion matrix
+        np.save(os.path.join(FLAGS.output_directory, "confusion_matrix.npy"), confusion)
+        print_confusion(confusion)
+
+        vocoder = Vocoder(device=device)
+        for i, datapoint in enumerate(tqdm.tqdm(testset, "Generate outputs", disable=None)):
+            save_output(
+                model,
+                datapoint,
+                os.path.join(FLAGS.output_directory, f"example_output_{i}.wav"),
+                device,
+                testset.mfcc_norm,
+                vocoder,
+            )
+
+        evaluate(testset, FLAGS.output_directory)
+    else:
+        main()

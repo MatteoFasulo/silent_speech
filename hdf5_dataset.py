@@ -18,14 +18,14 @@ VOICED_DIRS = [os.path.expandvars(d) for d in FLAGS.voiced_data_directories]
 
 
 class EMGDirectory(object):
-    def __init__(self, session_index, directory, silent, exclude_from_testset=False):
+    def __init__(self, session_index: int, directory: str, silent: bool, exclude_from_testset: bool = False):
         self.session_index = session_index
         self.directory = directory
         self.name = os.path.basename(directory)
         self.silent = silent
         self.exclude_from_testset = exclude_from_testset
 
-    def __lt__(self, other):
+    def __lt__(self, other: "EMGDirectory") -> bool:
         return self.session_index < other.session_index
 
     def __repr__(self):
@@ -33,7 +33,7 @@ class EMGDirectory(object):
 
 
 class H5EmgDataset(Dataset):
-    def __init__(self, dev=False, test=False, no_normalizers=False):
+    def __init__(self, dev: bool = False, test: bool = False, no_normalizers: bool = False):
         super().__init__()
         self.no_normalizers = no_normalizers
 
@@ -130,7 +130,7 @@ class H5EmgDataset(Dataset):
 
         self._h5 = None
 
-    def subset(self, fraction):
+    def subset(self, fraction: float) -> "H5EmgDataset":
         result = copy(self)
         result.example_indices = self.example_indices[: int(fraction * len(self.example_indices))]
         return result
@@ -138,7 +138,7 @@ class H5EmgDataset(Dataset):
     def __len__(self):
         return len(self.example_indices)
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: int) -> dict:
         if self._h5 is None:
             self._h5 = h5py.File(H5_PATH, "r", swmr=True)
 
@@ -196,7 +196,7 @@ class H5EmgDataset(Dataset):
         return sample
 
     @staticmethod
-    def collate_raw(batch):
+    def collate_raw(batch: list) -> dict:
         batch_size = len(batch)
         audio_features = []
         audio_feature_lengths = []
@@ -238,7 +238,7 @@ class H5EmgDataset(Dataset):
 
 
 class SizeAwareSampler(torch.utils.data.Sampler):
-    def __init__(self, emg_dataset, max_len):
+    def __init__(self, emg_dataset: "H5EmgDataset", max_len: int):
         self.dataset = emg_dataset
         self.max_len = max_len
         # ensure HDF5 is open

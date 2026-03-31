@@ -65,7 +65,7 @@ phoneme_inventory = [
 ]
 
 
-def normalize_volume(audio):
+def normalize_volume(audio: np.ndarray) -> np.ndarray:
     rms = librosa.feature.rms(y=audio)
     max_rms = rms.max() + 0.01
     target_rms = 0.2
@@ -76,11 +76,11 @@ def normalize_volume(audio):
     return audio
 
 
-def dynamic_range_compression_torch(x, C=1, clip_val=1e-5):
+def dynamic_range_compression_torch(x: torch.Tensor, C: int = 1, clip_val: float = 1e-5) -> torch.Tensor:
     return torch.log(torch.clamp(x, min=clip_val) * C)
 
 
-def spectral_normalize_torch(magnitudes):
+def spectral_normalize_torch(magnitudes: torch.Tensor) -> torch.Tensor:
     output = dynamic_range_compression_torch(magnitudes)
     return output
 
@@ -89,7 +89,7 @@ mel_basis = {}
 hann_window = {}
 
 
-def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+def mel_spectrogram(y: torch.Tensor, n_fft: int, num_mels: int, sampling_rate: int, hop_size: int, win_size: int, fmin: int, fmax: int, center: bool = False) -> torch.Tensor:
     if torch.min(y) < -1.0:
         print("min value is ", torch.min(y))
     if torch.max(y) > 1.0:
@@ -129,7 +129,7 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     return spec
 
 
-def load_audio(filename, start=None, end=None, max_frames=None, renormalize_volume=False):
+def load_audio(filename: str, start: int = None, end: int = None, max_frames: int = None, renormalize_volume: bool = False) -> np.ndarray:
     audio, r = sf.read(filename)
 
     if len(audio.shape) > 1:
@@ -161,7 +161,7 @@ def load_audio(filename, start=None, end=None, max_frames=None, renormalize_volu
     return mspec
 
 
-def double_average(x):
+def double_average(x: np.ndarray) -> np.ndarray:
     assert len(x.shape) == 1
     f = np.ones(9) / 9.0
     v = np.convolve(x, f, mode="same")
@@ -169,7 +169,7 @@ def double_average(x):
     return w
 
 
-def get_emg_features(emg_data, debug=False):
+def get_emg_features(emg_data: np.ndarray, debug: bool = False) -> np.ndarray:
     xs = emg_data - emg_data.mean(axis=0, keepdims=True)
     frame_features = []
     for i in range(emg_data.shape[1]):
@@ -217,7 +217,7 @@ def get_emg_features(emg_data, debug=False):
 
 
 class FeatureNormalizer(object):
-    def __init__(self, feature_samples, share_scale=False):
+    def __init__(self, feature_samples: list, share_scale: bool = False):
         """features_samples should be list of 2d matrices with dimension (time, feature)"""
         feature_samples = np.concatenate(feature_samples, axis=0)
         self.feature_means = feature_samples.mean(axis=0, keepdims=True)
@@ -226,18 +226,18 @@ class FeatureNormalizer(object):
         else:
             self.feature_stddevs = feature_samples.std(axis=0, keepdims=True)
 
-    def normalize(self, sample):
+    def normalize(self, sample: np.ndarray) -> np.ndarray:
         sample -= self.feature_means
         sample /= self.feature_stddevs
         return sample
 
-    def inverse(self, sample):
+    def inverse(self, sample: np.ndarray) -> np.ndarray:
         sample = sample * self.feature_stddevs
         sample = sample + self.feature_means
         return sample
 
 
-def combine_fixed_length(tensor_list, length):
+def combine_fixed_length(tensor_list: list, length: int) -> torch.Tensor:
     total_length = sum(t.size(0) for t in tensor_list)
     if total_length % length != 0:
         pad_length = length - (total_length % length)
@@ -256,7 +256,7 @@ def combine_fixed_length(tensor_list, length):
     return tensor.view(n, length, *tensor.size()[1:])
 
 
-def decollate_tensor(tensor, lengths):
+def decollate_tensor(tensor: torch.Tensor, lengths: list) -> list:
     b, s, d = tensor.size()
     tensor = tensor.view(b * s, d)
     results = []
@@ -268,7 +268,7 @@ def decollate_tensor(tensor, lengths):
     return results
 
 
-def splice_audio(chunks, overlap):
+def splice_audio(chunks: list, overlap: int) -> np.ndarray:
     chunks = [c.copy() for c in chunks]  # copy so we can modify in place
 
     assert np.all([c.shape[0] >= overlap for c in chunks])
@@ -293,7 +293,7 @@ def splice_audio(chunks, overlap):
     return result
 
 
-def print_confusion(confusion_mat, n=10):
+def print_confusion(confusion_mat: np.ndarray, n: int = 10):
     # axes are (pred, target)
     target_counts = confusion_mat.sum(0) + 1e-4
     aslist = []
@@ -321,7 +321,7 @@ def print_confusion(confusion_mat, n=10):
         )
 
 
-def read_phonemes(textgrid_fname, max_len=None):
+def read_phonemes(textgrid_fname: str, max_len: int = None) -> np.ndarray:
     tg = TextGrid(textgrid_fname)
     phone_ids = np.zeros(int(tg["phones"][-1].xmax * 86.133) + 1, dtype=np.int64)
     phone_ids[:] = -1
@@ -344,7 +344,7 @@ def read_phonemes(textgrid_fname, max_len=None):
     return phone_ids
 
 
-def numToWords(num, join=True):
+def numToWords(num: int, join: bool = True) -> str:
     """words = {} convert an integer number into words"""
     units = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
     teens = [
@@ -427,7 +427,7 @@ def numToWords(num, join=True):
     return words
 
 
-def convertNumbersToStrings(sentence):
+def convertNumbersToStrings(sentence: str) -> str:
 
     output_sentence = []
     for word in sentence.split():
@@ -440,7 +440,7 @@ def convertNumbersToStrings(sentence):
     return output_sentence
 
 
-def applyCustomCorrections(sentence, replacement_dict):
+def applyCustomCorrections(sentence: str, replacement_dict: dict) -> str:
     """
     Correct specific strings in dataset. Inputs are:
 
@@ -473,7 +473,7 @@ class TextTransform(object):
         }
         self.chars = [x for x in string.ascii_lowercase + string.digits + "|"]
 
-    def clean_text(self, text):
+    def clean_text(self, text: str) -> str:
         text = applyCustomCorrections(text, self.replacement_dict)
         text = unidecode(text)
         text = text.replace("-", " ")
@@ -483,17 +483,17 @@ class TextTransform(object):
 
         return text
 
-    def text_to_int(self, text):
+    def text_to_int(self, text: str) -> list:
         text = self.clean_text(text)
         text = text.replace(" ", "|")
         return [self.chars.index(c.lower()) for c in text]
 
-    def int_to_text(self, ints):
+    def int_to_text(self, ints: list) -> str:
         text = "".join(self.chars[i] for i in ints)
         text = text.replace("|", " ").lower()
         return text
 
-    def int_to_phone_str(self, ints):
+    def int_to_phone_str(self, ints: list) -> str:
         text = " ".join(self.chars[i] for i in ints)
         return text
 

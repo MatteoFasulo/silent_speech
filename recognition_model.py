@@ -12,6 +12,7 @@ import tqdm
 from torch import nn
 from torchaudio.models.decoder import ctc_decoder
 from torchinfo import summary
+import wandb
 
 from architecture import EMGTransformer
 from data_utils import combine_fixed_length, decollate_tensor, get_writer, load_config
@@ -22,7 +23,7 @@ FLAGS = load_config(os.path.join("config", "recognition_model.json"))
 writer = get_writer(FLAGS.log_directory, run_id)
 
 
-def test(model, dset, device, beam_size: int = 150):
+def test(model: EMGTransformer, dset: H5EmgDataset, device: str, beam_size: int = 150):
     model.eval()
 
     tkns = [c for c in dset.text_transform.chars] + ["_"]
@@ -78,7 +79,7 @@ def test(model, dset, device, beam_size: int = 150):
     return jiwer.wer(references, predictions)
 
 
-def train_model(model, trainset, devset, device):
+def train_model(model: EMGTransformer, trainset: H5EmgDataset, devset: H5EmgDataset, device: str) -> EMGTransformer:
 
     dataloader = torch.utils.data.DataLoader(
         trainset,
@@ -93,7 +94,9 @@ def train_model(model, trainset, devset, device):
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
         state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        print(f"Missing keys when loading model: {missing_keys}")
+        print(f"Unexpected keys when loading model: {unexpected_keys}")
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
     optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.weight_decay)
@@ -113,6 +116,10 @@ def train_model(model, trainset, devset, device):
 
     batch_idx = 0
     best_val_loss = float("inf")
+
+    if FLAGS.wandb_logging:
+        wandb.init(project=FLAGS.wandb_project, config=FLAGS, name=f"{FLAGS.task}_{run_id}", dir=FLAGS.wandb_save_dir)
+
     for epoch_idx in range(FLAGS.num_epochs):
         losses = []
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
@@ -134,6 +141,8 @@ def train_model(model, trainset, devset, device):
             loss = F.ctc_loss(pred, y, example["lengths"], example["text_int_lengths"], blank=n_chars)
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
+            if FLAGS.wandb_logging:
+                wandb.log({"train/loss_step": loss.item()}, step=batch_idx)
 
             loss.backward()
             if (batch_idx + 1) % 2 == 0:
@@ -161,6 +170,15 @@ def train_model(model, trainset, devset, device):
         lr_sched.step(val)
         current_lr = optim.param_groups[0]["lr"]
         writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
+
+        if FLAGS.wandb_logging:
+            wandb.log({
+                "train/loss_epoch": train_loss,
+                "val/wer": val,
+                "lr": current_lr,
+                "epoch": epoch_idx
+            })
+
         writer.add_scalar("train/lr", current_lr, epoch_idx)
         writer.add_scalar("val/wer", val, epoch_idx)
         torch.save(
@@ -179,8 +197,16 @@ def evaluate_saved():
     print(f"Unique silent flags in test set: {set(silent_flags)}")
     n_chars = len(testset.text_transform.chars)
     model = EMGTransformer(
-        testset.num_features,
-        n_chars + 1,
+        num_features=testset.num_features,
+        num_outs=n_chars + 1,
+        in_chans=FLAGS.in_chans,
+        embed_dim=FLAGS.embed_dim,
+        n_layer=FLAGS.num_layers,
+        n_head=FLAGS.num_heads,
+        mlp_ratio=FLAGS.mlp_ratio,
+        attn_drop=FLAGS.dropout,
+        proj_drop=FLAGS.dropout,
+        freeze_blocks=FLAGS.freeze_blocks,
     ).to(device)
     model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
     summary(
@@ -220,7 +246,18 @@ def main():
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
 
     n_chars = len(devset.text_transform.chars)
-    model = EMGTransformer(devset.num_features, n_chars + 1, freeze_blocks=FLAGS.freeze_blocks).to(device)
+    model = EMGTransformer(
+        num_features=devset.num_features,
+        num_outs=n_chars + 1,
+        in_chans=FLAGS.in_chans,
+        embed_dim=FLAGS.embed_dim,
+        n_layer=FLAGS.num_layers,
+        n_head=FLAGS.num_heads,
+        mlp_ratio=FLAGS.mlp_ratio,
+        attn_drop=FLAGS.dropout,
+        proj_drop=FLAGS.dropout,
+        freeze_blocks=FLAGS.freeze_blocks,
+    ).to(device)
     summary(
         model,
         input_data=[
