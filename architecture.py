@@ -315,7 +315,6 @@ class CustomAttentionBlock(nn.Module):
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             attn_drop=attn_drop,
-            norm_layer=norm_layer,
             relative_positional_distance=100,
         )
         self.norm1 = norm_layer(dim)

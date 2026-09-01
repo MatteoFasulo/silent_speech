@@ -22,6 +22,7 @@ dependencies = [
     "speechbrain",
     "h5py",
     "transformers",
+    "safetensors",
     "huggingface_hub<1.0",
     "omegaconf",
     "torch-tb-profiler",

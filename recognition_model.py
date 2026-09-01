@@ -13,6 +13,7 @@ from torch import nn
 from torchaudio.models.decoder import ctc_decoder
 from torchinfo import summary
 import wandb
+from safetensors.torch import load_file as load_safetensors
 
 from architecture import EMGTransformer
 from data_utils import combine_fixed_length, decollate_tensor, get_writer, load_config
@@ -21,6 +22,21 @@ from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 FLAGS = load_config(os.path.join("config", "recognition_model.json"))
 writer = get_writer(FLAGS.log_directory, run_id)
+
+
+def load_starting_state_dict(checkpoint_path: str) -> dict:
+    """Load either a native PyTorch/Lightning or a safetensors checkpoint."""
+    if checkpoint_path.endswith(".safetensors"):
+        state_dict = load_safetensors(checkpoint_path, device="cpu")
+    else:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint.get("state_dict", checkpoint)
+
+    return {
+        key.removeprefix("model."): value
+        for key, value in state_dict.items()
+        if not key.endswith("num_batches_tracked")
+    }
 
 
 def test(model: EMGTransformer, dset: H5EmgDataset, device: str, beam_size: int = 150):
@@ -92,8 +108,7 @@ def train_model(model: EMGTransformer, trainset: H5EmgDataset, devset: H5EmgData
 
     n_chars = len(devset.text_transform.chars)
     if FLAGS.start_training_from is not None:
-        state_dict = torch.load(FLAGS.start_training_from, map_location="cpu", weights_only=False)["state_dict"]
-        state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
+        state_dict = load_starting_state_dict(FLAGS.start_training_from)
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         print(f"Missing keys when loading model: {missing_keys}")
         print(f"Unexpected keys when loading model: {unexpected_keys}")
