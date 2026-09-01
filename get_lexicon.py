@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import shutil
 import requests
 
 import tqdm
@@ -61,13 +62,21 @@ def download_kenlm(output_dir: str) -> None:
     Returns:
         None. Files are saved to the specified output directory.
     """
+    output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    original_cwd = os.getcwd()
-    os.chdir(output_dir)
 
     logging.info(f"Downloading KenLM files to {output_dir}...")
     try:
-        download_pretrained_files("librispeech-4-gram")
+        downloaded_files = download_pretrained_files("librispeech-4-gram")
+        # torchaudio stores existing assets in its cache and returns their
+        # paths; it does not copy them into the current working directory.
+        cached_files = {
+            "lm.bin": downloaded_files.lm,
+            "lexicon.txt": downloaded_files.lexicon,
+            "tokens.txt": downloaded_files.tokens,
+        }
+        for filename, source_path in cached_files.items():
+            shutil.copy2(source_path, os.path.join(output_dir, filename))
     except Exception as e:
         logging.warning(f"Torchaudio download failed ({e}), attempting manual download...")
         files = {
@@ -76,14 +85,13 @@ def download_kenlm(output_dir: str) -> None:
             "tokens.txt": "https://download.pytorch.org/torchaudio/decoder-assets/librispeech-4-gram/tokens.txt",
         }
         for filename, url in files.items():
-            if not os.path.exists(filename):
+            target_path = os.path.join(output_dir, filename)
+            if not os.path.exists(target_path):
                 logging.info(f"Downloading {filename}...")
                 response = requests.get(url, stream=True, timeout=60)
                 response.raise_for_status()
-                with open(filename, "wb") as f:
+                with open(target_path, "wb") as f:
                     f.write(response.content)
-
-    os.chdir(original_cwd)
 
 
 if __name__ == "__main__":
