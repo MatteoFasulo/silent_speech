@@ -312,9 +312,17 @@ if __name__ == "__main__":
         default=None,
         help="Path to a saved model checkpoint to evaluate on the test set.",
     )
+    parser.add_argument(
+        "--start_training_from",
+        type=str,
+        default=None,
+        help="Path to a checkpoint or safetensors file used to initialize training.",
+    )
     args = parser.parse_args()
     if args.evaluate_saved is not None:
         FLAGS.evaluate_saved = args.evaluate_saved
         evaluate_saved()
     else:
+        if args.start_training_from is not None:
+            FLAGS.start_training_from = args.start_training_from
         main()
