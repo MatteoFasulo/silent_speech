@@ -26,7 +26,8 @@ writer = get_writer(FLAGS.log_directory, run_id)
 
 def load_starting_state_dict(checkpoint_path: str) -> dict:
     """Load either a native PyTorch/Lightning or a safetensors checkpoint."""
-    if checkpoint_path.endswith(".safetensors"):
+    checkpoint_path = checkpoint_path.strip()
+    if checkpoint_path.lower().endswith(".safetensors"):
         state_dict = load_safetensors(checkpoint_path, device="cpu")
     else:
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -114,9 +115,13 @@ def train_model(model: EMGTransformer, trainset: H5EmgDataset, devset: H5EmgData
         print(f"Unexpected keys when loading model: {unexpected_keys}")
         logging.info(f"Loaded model from {FLAGS.start_training_from}")
 
-    optim = torch.optim.AdamW(model.parameters(), weight_decay=FLAGS.weight_decay)
+    optim = torch.optim.AdamW(
+        model.parameters(), lr=FLAGS.learning_rate, weight_decay=FLAGS.weight_decay
+    )
     # lr_sched = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[125, 150, 175], gamma=0.5)
-    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, "min", 0.5, patience=FLAGS.learning_rate_patience)
+    lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+        optim, milestones=[125, 150, 175], gamma=0.5
+    )
 
     def set_lr(new_lr):
         for param_group in optim.param_groups:
@@ -161,6 +166,7 @@ def train_model(model: EMGTransformer, trainset: H5EmgDataset, devset: H5EmgData
 
             loss.backward()
             if (batch_idx + 1) % 2 == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optim.step()
                 optim.zero_grad(set_to_none=True)
 
@@ -182,7 +188,7 @@ def train_model(model: EMGTransformer, trainset: H5EmgDataset, devset: H5EmgData
         else:
             logging.info(f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} - no validation WER computed")
 
-        lr_sched.step(val)
+        lr_sched.step()
         current_lr = optim.param_groups[0]["lr"]
         writer.add_scalar("train/loss_epoch", train_loss, epoch_idx)
 
