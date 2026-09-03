@@ -7,7 +7,7 @@
     ],
     "h5_path": "$DATA_PATH/Gaddy/h5/emg_dataset.h5",
     "normalizers_file": "normalizers.pkl",
-    "testset_file": "testset_origdev.json",
+    "testset_file": "testset_largedev.json",
     "text_align_directory": "text_alignments",
     "output_directory": "./models/recognition_model/",
     "ckpt_directory": "output",
