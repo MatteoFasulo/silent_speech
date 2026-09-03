@@ -218,6 +218,73 @@ class ResBlock(nn.Module):
         else:
             return self.act(x + res)
 
+class RotaryPositionalEmbeddings(nn.Module):
+    """Rotary positional embeddings for the Q/K tensors."""
+
+    def __init__(self, dim: int, max_seq_len: int = 4096, base: int = 10_000):
+        super().__init__()
+        theta = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        positions = torch.arange(max_seq_len).float()
+        freqs = torch.einsum("i,j->ij", positions, theta)
+        self.register_buffer("cache", torch.stack((freqs.cos(), freqs.sin()), dim=-1), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [batch, sequence, heads, head_dim]
+        seq_len = x.size(1)
+        x_pair = x.float().reshape(*x.shape[:-1], -1, 2)
+        cache = self.cache[:seq_len].view(1, seq_len, 1, -1, 2)
+        rotated = torch.stack(
+            (
+                x_pair[..., 0] * cache[..., 0] - x_pair[..., 1] * cache[..., 1],
+                x_pair[..., 1] * cache[..., 0] + x_pair[..., 0] * cache[..., 1],
+            ),
+            dim=-1,
+        )
+        return rotated.flatten(3).type_as(x)
+
+
+class RoPEAttention(nn.Module):
+    """Multi-head self-attention with rotary positional embeddings."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 3,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.1,
+        proj_drop: float = 0.1,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        self.dim = dim
+        self.hd = dim // num_heads
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.rope = RotaryPositionalEmbeddings(self.hd)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, length, dim = x.shape
+        qkv = self.qkv(x).reshape(batch, length, 3, self.num_heads, self.hd)
+        q, k, v = qkv.permute(2, 0, 1, 3, 4).unbind(0)
+        q = self.rope(q)
+        k = self.rope(k)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            is_causal=False,
+        )
+        out = out.transpose(1, 2).reshape(batch, length, dim)
+        return self.proj_drop(self.proj(out))
+
+
 class LRPEAttention(nn.Module):
     """
     Multi Head Attention with Learned Relative Positional Encoding (LRPE) applied to the logits.
@@ -308,15 +375,27 @@ class CustomAttentionBlock(nn.Module):
         attn_drop: float = 0.0,
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
+        attention_type: str = "rope",
     ) -> None:
         super().__init__()
-        self.attn = LRPEAttention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            attn_drop=attn_drop,
-            relative_positional_distance=100,
-        )
+        if attention_type == "rope":
+            self.attn = RoPEAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                attn_drop=attn_drop,
+                proj_drop=proj_drop,
+            )
+        elif attention_type == "lrpe":
+            self.attn = LRPEAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                attn_drop=attn_drop,
+                relative_positional_distance=100,
+            )
+        else:
+            raise ValueError(f"Unknown attention_type: {attention_type!r}")
         self.norm1 = norm_layer(dim)
         ffn_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
@@ -356,6 +435,7 @@ class EMGTransformer(nn.Module):
         qkv_bias: bool = True,
         attn_drop: float = 0.1,
         proj_drop: float = 0.1,
+        attention_type: str = "rope",
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
         freeze_blocks: bool = False,
@@ -383,6 +463,7 @@ class EMGTransformer(nn.Module):
                     qkv_bias=qkv_bias,
                     attn_drop=attn_drop,
                     proj_drop=proj_drop,
+                    attention_type=attention_type,
                     act_layer=act_layer,
                     norm_layer=norm_layer,
                 )

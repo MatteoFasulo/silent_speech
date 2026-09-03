@@ -19,6 +19,7 @@
     "in_chans": 8,
     "num_heads": 3,
     "num_layers": 8,
+    "attention_type": "rope",
     "mlp_ratio": 4.0,
     "dropout": 0.1,
     "downsample_factor": 8,

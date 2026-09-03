@@ -29,7 +29,7 @@ tar -xvzf text_alignments/text_alignments.tar.gz
 
 ## Data & Preprocessing
 
-The EMG and audio data can be downloaded from [Zenodo](https://doi.org/10.5281/zenodo.4064408). However, we provide a script to automate this process via the `download_data.py` script. After downloading, you can optionally clean and resample the audio for faster training without having to do it on-the-fly.
+The EMG and audio data can be downloaded from [Zenodo](https://doi.org/10.5281/zenodo.4064408). We provide a script to automate this process via `download_data.py`. The audio must then be cleaned and resampled before building the HDF5 dataset; the preprocessing and training pipeline expects the generated resampled audio files.
 
 An HDF5 dataset builder is also included to convert the raw data into a format that allows for much faster loading during training, suitable for HPC environments.
 
@@ -39,8 +39,8 @@ Configure your `$DATA_PATH` in `config/transduction_model.json`, then run:
 python download_data.py
 ```
 
-### 2. Audio Cleaning (Optional)
-Speeds up training by saving resampled audio files:
+### 2. Audio Cleaning and Resampling
+Required before building the HDF5 dataset. This creates the resampled audio files used by preprocessing:
 ```bash
 python data_collection/clean_audio.py
 ```
@@ -104,4 +104,3 @@ The documentation includes a Quick Start guide, detailed project sections, and a
 - **EMG Data**: [Zenodo (4064408)](https://doi.org/10.5281/zenodo.4064408)
 - **Transduction Models**: [Zenodo (6747411)](https://doi.org/10.5281/zenodo.6747411)
 - **Recognition Models**: [Zenodo (7183877)](https://doi.org/10.5281/zenodo.7183877)
-

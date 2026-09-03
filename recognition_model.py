@@ -227,6 +227,7 @@ def evaluate_saved():
         mlp_ratio=FLAGS.mlp_ratio,
         attn_drop=FLAGS.dropout,
         proj_drop=FLAGS.dropout,
+        attention_type=FLAGS.attention_type,
         freeze_blocks=FLAGS.freeze_blocks,
     ).to(device)
     model.load_state_dict(torch.load(FLAGS.evaluate_saved, map_location=device), strict=True)
@@ -277,6 +278,7 @@ def main():
         mlp_ratio=FLAGS.mlp_ratio,
         attn_drop=FLAGS.dropout,
         proj_drop=FLAGS.dropout,
+        attention_type=FLAGS.attention_type,
         freeze_blocks=FLAGS.freeze_blocks,
     ).to(device)
     summary(
@@ -324,6 +326,12 @@ if __name__ == "__main__":
         default=None,
         help="Path to a checkpoint or safetensors file used to initialize training.",
     )
+    parser.add_argument(
+        "--attention_type",
+        choices=("lrpe", "rope"),
+        default=None,
+        help="Attention positional encoding backend (overrides the config).",
+    )
     args = parser.parse_args()
     if args.evaluate_saved is not None:
         FLAGS.evaluate_saved = args.evaluate_saved
@@ -331,4 +339,6 @@ if __name__ == "__main__":
     else:
         if args.start_training_from is not None:
             FLAGS.start_training_from = args.start_training_from
+        if args.attention_type is not None:
+            FLAGS.attention_type = args.attention_type
         main()
