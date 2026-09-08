@@ -220,3 +220,4 @@ runs/
 *.ipynb
 *.bin
 eval_results/
+wandb/

@@ -19,7 +19,7 @@
     "in_chans": 8,
     "num_heads": 3,
     "num_layers": 8,
-    "attention_type": "rope",
+    "attention_type": "lrpe",
     "mlp_ratio": 4.0,
     "dropout": 0.1,
     "downsample_factor": 8,
@@ -31,12 +31,16 @@
     "learning_rate_warmup": 1000,
     "start_training_from": null,
     "weight_decay": 0,
-    "eval_interval": 5,
     "evaluate_saved": null,
+    "eval_interval": 5,
     "num_workers": 8,
     "freeze_blocks": false,
     "wandb_logging": false,
     "verbose": false,
     "seed": 42,
-    "task": "emg2text"
+    "task": "emg2text",
+    "model": "tinymyo",
+    "gaddy_model_size": 768,
+    "gaddy_num_layers": 6,
+    "gaddy_dropout": 0.2
 }

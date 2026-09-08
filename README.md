@@ -71,16 +71,39 @@ python transduction_model.py --evaluate_saved "./output/model_best.pt" --output_
 
 ## EMG to Text (Recognition)
 
-Directly convert silent speech to text using a CTC decoder.
+Directly convert silent speech to text using a CTC beam-search decoder with a KenLM n-gram language model.
 
-For recognition, we use `SpeechBrain`'s built-in CTC decoder with a KenLM n-gram language model for improved performance. The `get_lexicon.py` script generates the necessary lexicon from the training data.
+The original implementation by Gaddy uses [`ctcdecode`](https://github.com/parlance/ctcdecode) together with a KenLM language model. In this implementation, `ctcdecode` is replaced by `torchaudio.models.decoder.ctc_decoder`, which uses the Flashlight CTC decoder.
+
+Unlike Gaddy's original `ctcdecode` call, the torchaudio decoder requires an explicit lexicon when performing lexicon-based decoding. Therefore, we reconstruct a compatible lexicon from the vocabulary stored in the same KenLM model used by the original work. The vocabulary is extracted from `lm.binary`, and words containing symbols that cannot be emitted by the recognition model are removed. In particular, the acoustic model supports lowercase letters, digits, and the word-separator token `|`, but not apostrophes.
+
+From the original 500,000-word KenLM vocabulary, 428,062 words are representable by the acoustic model and are exported to:
+
+```text
+KenLM/gaddy_lexicon.txt
+```
+
+This preserves the original KenLM language model while adapting its vocabulary to the explicit lexicon format required by the torchaudio/Flashlight decoder.
 
 ### Setup Decoder
-Download the pre-trained KenLM language model and generate the custom lexicon from your dataset in one step:
+
+Download the same DeepSpeech v0.6.1 KenLM language model referenced by the original Gaddy implementation:
+
 ```bash
-python get_lexicon.py
+mkdir -p KenLM
+
+wget https://github.com/mozilla/DeepSpeech/releases/download/v0.6.1/lm.binary
+mv lm.binary KenLM/lm.binary
 ```
-This script downloads the Librispeech 4-gram model into the `KenLM/` directory and creates `gaddy_lexicon.txt` containing all unique words found in the local HDF5 datasets.
+
+The decoder then uses the matched pair:
+
+```text
+KenLM/lm.binary
+KenLM/gaddy_lexicon.txt
+```
+
+where `lm.binary` is the original KenLM model and `gaddy_lexicon.txt` is reconstructed from its embedded vocabulary for use with torchaudio.
 
 ### Run
 ```bash
@@ -88,6 +111,14 @@ python recognition_model.py                                      # Train
 python recognition_model.py --evaluate_saved "path/to/model.pt"  # Evaluate
 ```
 Configuration (hyperparameters, paths, WandB) is managed via `config/recognition_model.json`.
+
+The recognition script supports both TinyMyo and Gaddy's original architecture. Select the
+architecture explicitly when evaluating a checkpoint:
+
+```bash
+python recognition_model.py --model tinymyo --evaluate_saved path/to/tinymyo.ckpt
+python recognition_model.py --model gaddy --evaluate_saved path/to/gaddy.ckpt
+```
 
 ## Documentation
 
