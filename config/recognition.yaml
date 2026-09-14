@@ -1,7 +1,7 @@
 base_config: data.yaml
 
 output_directory: ./models/recognition_model/
-ckpt_directory: /ritom/scratch/cscs/mfasulo/checkpoints
+ckpt_directory: $CKPT_DIR
 log_directory: logs
 lm_directory: KenLM
 full_seq_len: 1600

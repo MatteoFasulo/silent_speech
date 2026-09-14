@@ -37,6 +37,9 @@ from vocoder import Vocoder
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 FLAGS = apply_cli_overrides(load_config(os.path.join("config", "transduction.yaml")))
+FLAGS.ckpt_directory = os.path.expandvars(str(FLAGS.ckpt_directory))
+if "$CKPT_DIR" in FLAGS.ckpt_directory:
+    raise RuntimeError("CKPT_DIR must be set before running transduction_model.py")
 writer = get_writer(FLAGS.log_directory, run_id)
 
 

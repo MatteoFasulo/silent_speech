@@ -9,7 +9,12 @@ uv sync
 git submodule update --init
 ```
 
-Set `$DATA_PATH` in the environment. Dataset paths and the train/dev/test split are defined in `config/data.yaml`.
+Set `DATA_PATH` and `CKPT_DIR` in the environment. Dataset paths and the train/dev/test split are defined in `config/data.yaml`; both training scripts save checkpoints under `CKPT_DIR`.
+
+```bash
+export DATA_PATH=/path/to/data
+export CKPT_DIR=/path/to/checkpoints
+```
 
 Extract the alignment archive when needed:
 

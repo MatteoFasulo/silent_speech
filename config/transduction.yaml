@@ -1,7 +1,7 @@
 base_config: data.yaml
 
 output_directory: ./models/transduction_model/
-ckpt_directory: output
+ckpt_directory: $CKPT_DIR
 log_directory: logs
 hifigan_checkpoint: ./hifigan_finetuned/checkpoint
 full_seq_len: 1600
