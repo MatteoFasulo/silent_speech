@@ -3,11 +3,53 @@ import random
 
 import torch
 import torch.nn.functional as F
+from timm.layers.weight_init import trunc_normal_
 from torch import nn
 
-from architecture_gaddy import ResBlock
 from transformer_gaddy import LearnedRelativePositionalEmbedding
 
+
+class ResBlock(nn.Module):
+    def __init__(self, num_ins: int, num_outs: int, stride: int = 1, pre_activation: bool = False, beta: float = 1.0):
+        super().__init__()
+        self.num_ins = num_ins
+        self.num_outs = num_outs
+        self.stride = stride
+        self.pre_activation = pre_activation
+        self.beta = beta
+
+        self.conv1 = nn.Conv1d(num_ins, num_outs, 3, padding=1, stride=stride)
+        self.norm1 = nn.BatchNorm1d(num_outs)
+        self.conv2 = nn.Conv1d(num_outs, num_outs, 3, padding=1)
+        self.norm2 = nn.BatchNorm1d(num_outs)
+        self.act = nn.GELU()
+        self.beta = beta
+
+        if stride != 1 or num_ins != num_outs:
+            self.residual_path = nn.Conv1d(num_ins, num_outs, 1, stride=stride)
+            self.res_norm = nn.BatchNorm1d(num_outs)
+            if pre_activation:
+                self.skip = nn.Sequential(self.res_norm, self.residual_path)
+            else:
+                self.skip = nn.Sequential(self.residual_path, self.res_norm)
+        else:
+            self.skip = nn.Identity()
+
+        self.pre_activation = pre_activation
+
+        if pre_activation:
+            self.block = nn.Sequential(self.norm1, self.act, self.conv1, self.norm2, self.act, self.conv2)
+        else:
+            self.block = nn.Sequential(self.conv1, self.norm1, self.act, self.conv2, self.norm2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        res = self.block(x) * self.beta
+        x = self.skip(x)
+
+        if self.pre_activation:
+            return x + res
+        else:
+            return self.act(x + res)
 
 class LRPEAttention(nn.Module):
     """
@@ -32,7 +74,10 @@ class LRPEAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
 
         self.relative_positional = LearnedRelativePositionalEmbedding(
-            relative_positional_distance, num_heads, self.hd, True
+            max_relative_pos=relative_positional_distance,
+            num_heads=num_heads,
+            embedding_dim=self.hd,
+            unmasked=True
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -52,8 +97,8 @@ class LRPEAttention(nn.Module):
         logits = q @ k.transpose(-2, -1) * scale_factor
 
         # The shared Gaddy LRPE implementation expects [L, B * H, Dh].
-        q_pos = q.permute(0, 2, 1, 3)  # [B, N, n_h, h_d]
-        b, l, h, d = q_pos.size()
+        b, h, l, d = q.size()
+        q_pos = q.permute(2, 0, 1, 3).contiguous()
         position_logits, _ = self.relative_positional(q_pos.reshape(l, b * h, d))
         # LRPE returns [B * H, L, L]; restore [B, H, L, L].
         assert position_logits.shape == (b * h, l, l)
@@ -99,21 +144,15 @@ class CustomAttentionBlock(nn.Module):
         attn_drop: float = 0.0,
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
-        attention_type: str = "lrpe",
     ) -> None:
         super().__init__()
-        if attention_type in ("lrpe", "rope"):
-            # "rope" is retained as a legacy config value, but now resolves
-            # to LRPE. RoPE is no longer implemented in this model.
-            self.attn = LRPEAttention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                attn_drop=attn_drop,
-                relative_positional_distance=100,
-            )
-        else:
-            raise ValueError(f"Unknown attention_type: {attention_type!r}")
+        self.attn = LRPEAttention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            attn_drop=attn_drop,
+            relative_positional_distance=100,
+        )
         self.norm1 = norm_layer(dim)
         ffn_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
@@ -151,12 +190,10 @@ class EMGTransformer(nn.Module):
         n_head: int = 3,
         mlp_ratio: int = 4,
         qkv_bias: bool = True,
-        attn_drop: float = 0.1,
-        proj_drop: float = 0.1,
-        attention_type: str = "lrpe",
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
-        freeze_blocks: bool = False,
     ):
         super().__init__()
 
@@ -164,11 +201,12 @@ class EMGTransformer(nn.Module):
         self.n_layer = n_layer
         self.n_head = n_head
         self.embed_dim = embed_dim
+        self.num_ins = in_chans
 
         self.conv_blocks = nn.Sequential(
-            ResBlock(in_chans, embed_dim, 2),
-            ResBlock(embed_dim, embed_dim, 2),
-            ResBlock(embed_dim, embed_dim, 2),
+            ResBlock(num_ins=in_chans, num_outs=embed_dim, stride=2),
+            ResBlock(num_ins=embed_dim, num_outs=embed_dim, stride=2),
+            ResBlock(num_ins=embed_dim, num_outs=embed_dim, stride=2),
         )
         self.w_raw_in = nn.Linear(embed_dim, embed_dim)
 
@@ -181,7 +219,6 @@ class EMGTransformer(nn.Module):
                     qkv_bias=qkv_bias,
                     attn_drop=attn_drop,
                     proj_drop=proj_drop,
-                    attention_type=attention_type,
                     act_layer=act_layer,
                     norm_layer=norm_layer,
                 )
@@ -193,6 +230,18 @@ class EMGTransformer(nn.Module):
         self.has_aux_out = num_aux_outs is not None
         if self.has_aux_out:
             self.w_aux = nn.Linear(embed_dim, num_aux_outs)
+
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """Initializes the model weights."""
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m: nn.Module):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x_feat: torch.Tensor, x_raw: torch.Tensor, session_ids: torch.Tensor) -> torch.Tensor:
         """

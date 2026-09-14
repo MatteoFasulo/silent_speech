@@ -17,11 +17,20 @@ from torchinfo import summary
 import wandb
 from architecture import EMGTransformer
 from architecture_gaddy import GaddyModel
-from data_utils import combine_fixed_length, decollate_tensor, get_writer, load_config
+from data_utils import (
+    apply_cli_overrides,
+    combine_fixed_length,
+    decollate_tensor,
+    get_writer,
+    load_config,
+    make_torch_generator,
+    seed_everything,
+    seed_worker,
+)
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-FLAGS = load_config(os.path.join("config", "recognition_model.json"))
+FLAGS = apply_cli_overrides(load_config(os.path.join("config", "recognition.yaml")))
 writer = get_writer(FLAGS.log_directory, run_id)
 
 
@@ -47,8 +56,6 @@ def build_model(num_features: int, num_outs: int, model_name: str | None = None)
             mlp_ratio=FLAGS.mlp_ratio,
             attn_drop=FLAGS.dropout,
             proj_drop=FLAGS.dropout,
-            attention_type=FLAGS.attention_type,
-            freeze_blocks=FLAGS.freeze_blocks,
         )
     raise ValueError(f"Unknown recognition model: {model_name!r}")
 
@@ -73,40 +80,30 @@ def evaluate_wer(
     model: nn.Module,
     dset: H5EmgDataset,
     device: str,
-    beam_size: int = 100,
+    beam_size: int = 150,
 ) -> float:
     """
     Evaluate WER using the KenLM + Flashlight CTC beam-search decoder.
-
-    This function is NOT called during training.
     """
-    model.eval()
-
     tkns = list(dset.text_transform.chars) + ["_"]
-
     decoder = ctc_decoder(
         lexicon=os.path.join(
             FLAGS.lm_directory,
-            "gaddy_lexicon.txt",
+            "gaddy_derived_lexicon.txt",
         ),
         tokens=tkns,
         lm=os.path.join(
             FLAGS.lm_directory,
-            "lm.binary",
+            "lm.bin",
         ),
         lm_dict=None,
         blank_token="_",
         sil_token="|",
         nbest=1,
-        # Gaddy ctcdecode parameters
-        lm_weight=1.5,  # alpha
-        word_score=1.85,  # beta
-        # ctcdecode default beam_width = 100
+        lm_weight=4.0,
+        word_score=-1.75,
+        sil_score=0.0,
         beam_size=beam_size,
-        # We have only 38 output tokens, so all are considered.
-        beam_size_token=None,
-        # Flashlight-specific pruning
-        beam_threshold=50,
     )
 
     dataloader = torch.utils.data.DataLoader(
@@ -116,17 +113,16 @@ def evaluate_wer(
         collate_fn=dset.collate_raw,
         num_workers=FLAGS.num_workers,
         persistent_workers=True,
+        worker_init_fn=seed_worker,
+        generator=make_torch_generator(int(FLAGS.seed)),
     )
 
     references = []
     predictions = []
 
+    model.eval()
     with torch.no_grad():
-        for example in tqdm.tqdm(
-            dataloader,
-            "WER evaluation",
-            disable=None,
-        ):
+        for example in tqdm.tqdm(dataloader, "WER evaluation"):
             X = example["emg"][0].unsqueeze(0).to(device)
             X_raw = example["raw_emg"][0].unsqueeze(0).to(device)
             sess = example["session_ids"][0].to(device)
@@ -145,6 +141,8 @@ def evaluate_wer(
             if target_text:
                 references.append(target_text)
                 predictions.append(pred_text)
+
+    model.train()
 
     if FLAGS.verbose:
         for ref, pred in zip(references, predictions):
@@ -176,8 +174,11 @@ def evaluate_ctc_loss(
         batch_sampler=SizeAwareSampler(
             dset,
             128_000,
+            seed=int(FLAGS.seed),
         ),
         persistent_workers=True,
+        worker_init_fn=seed_worker,
+        generator=make_torch_generator(int(FLAGS.seed)),
     )
 
     n_chars = len(dset.text_transform.chars)
@@ -258,8 +259,11 @@ def train_model(
         batch_sampler=SizeAwareSampler(
             trainset,
             128_000,
+            seed=int(FLAGS.seed),
         ),
         persistent_workers=True,
+        worker_init_fn=seed_worker,
+        generator=make_torch_generator(int(FLAGS.seed)),
     )
 
     n_chars = len(devset.text_transform.chars)
@@ -286,12 +290,8 @@ def train_model(
 
     lr_sched = torch.optim.lr_scheduler.MultiStepLR(
         optim,
-        milestones=[
-            125,
-            150,
-            175,
-        ],
-        gamma=0.5,
+        milestones=list(FLAGS.learning_rate_milestones),
+        gamma=FLAGS.learning_rate_gamma,
     )
 
     def set_lr(new_lr):
@@ -308,23 +308,13 @@ def train_model(
 
     batch_idx = 0
 
-    best_val_loss = float("inf")
-    best_wer = float("inf")
-
-    best_ctc_model_path = os.path.join(
+    run_checkpoint_directory = os.path.join(
         FLAGS.ckpt_directory,
-        f"model_{run_id}_best_ctc.pt",
+        FLAGS.model,
+        run_id,
     )
-
-    best_wer_model_path = os.path.join(
-        FLAGS.ckpt_directory,
-        f"model_{run_id}_best_wer.pt",
-    )
-
-    last_model_path = os.path.join(
-        FLAGS.ckpt_directory,
-        f"model_{run_id}_last.pt",
-    )
+    os.makedirs(run_checkpoint_directory, exist_ok=True)
+    logging.info(f"Run checkpoints: {run_checkpoint_directory}")
 
     if FLAGS.wandb_logging:
         wandb.init(
@@ -406,7 +396,6 @@ def train_model(
             if FLAGS.wandb_logging:
                 wandb.log(
                     {"train/loss_step": loss.item()},
-                    step=batch_idx,
                 )
 
             loss.backward()
@@ -425,19 +414,11 @@ def train_model(
 
         train_loss = float(np.mean(train_losses))
 
-        # -----------------------------
-        # Validation CTC loss ONLY.
-        # No KenLM / beam search here.
-        # -----------------------------
         val_loss = evaluate_ctc_loss(
             model,
             devset,
             device,
         )
-
-        lr_sched.step()
-
-        current_lr = optim.param_groups[0]["lr"]
 
         logging.info(
             f"finished epoch {epoch_idx + 1} - "
@@ -445,22 +426,6 @@ def train_model(
             f"validation loss: {val_loss:.4f}"
         )
 
-        # -----------------------------
-        # Save best model according
-        # to validation CTC loss.
-        # -----------------------------
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-
-            torch.save(
-                model.state_dict(),
-                best_ctc_model_path,
-            )
-
-            logging.info(f"Validation loss improved, new best: {best_val_loss:.4f}")
-
-        # Beam-search WER is expensive, so evaluate only every configured
-        # interval, plus the final epoch.
         wer_interval = max(1, int(getattr(FLAGS, "eval_interval", 5)))
         if (epoch_idx + 1) % wer_interval == 0 or epoch_idx == FLAGS.num_epochs - 1:
             dev_wer = evaluate_wer(
@@ -470,26 +435,21 @@ def train_model(
                 beam_size=150,
             )
             logging.info(
-                f"finished epoch {epoch_idx + 1} - "
-                f"dev WER: {dev_wer * 100:.2f}%"
+                f"finished epoch {epoch_idx + 1} - dev WER: {dev_wer * 100:.2f}%"
             )
             writer.add_scalar("val/wer", dev_wer, epoch_idx)
             if FLAGS.wandb_logging:
                 wandb.log({"val/wer": dev_wer, "epoch": epoch_idx + 1})
 
-            if dev_wer < best_wer:
-                best_wer = dev_wer
-                torch.save(
-                    model.state_dict(),
-                    best_wer_model_path,
-                )
-                logging.info(f"Dev WER improved, new best: {best_wer * 100:.2f}%")
+        lr_sched.step()
+        current_lr = optim.param_groups[0]["lr"]
 
-        # Always keep the most recent model.
-        torch.save(
-            model.state_dict(),
-            last_model_path,
+        checkpoint_path = os.path.join(
+            run_checkpoint_directory,
+            f"epoch={epoch_idx + 1:03d}.pt",
         )
+        torch.save(model.state_dict(), checkpoint_path)
+        logging.info(f"Saved checkpoint: {checkpoint_path}")
 
         writer.add_scalar(
             "train/loss_epoch",
@@ -519,16 +479,11 @@ def train_model(
                 }
             )
 
-    logging.info(f"Best validation CTC loss: {best_val_loss:.4f}")
-    logging.info(f"Best dev WER: {best_wer * 100:.2f}%")
-    logging.info(f"Saved CTC-best checkpoint: {best_ctc_model_path}")
-    logging.info(f"Saved WER-best checkpoint: {best_wer_model_path}")
-    logging.info(f"Saved last checkpoint: {last_model_path}")
-
     return model
 
 
 def evaluate_saved():
+    seed_everything(int(FLAGS.seed))
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
 
     dev = FLAGS.dev
@@ -536,6 +491,7 @@ def evaluate_saved():
     testset = H5EmgDataset(
         dev=dev,
         test=not dev,
+        config=FLAGS,
     )
 
     silent_flags = [d.silent for (d, _) in testset.example_indices]
@@ -561,6 +517,7 @@ def evaluate_saved():
 
 
 def main():
+    seed_everything(int(FLAGS.seed))
     os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
@@ -577,9 +534,9 @@ def main():
 
     logging.info(sys.argv)
 
-    trainset = H5EmgDataset(dev=False, test=False)
-    devset = H5EmgDataset(dev=True)
-    testset = H5EmgDataset(test=True)
+    trainset = H5EmgDataset(dev=False, test=False, config=FLAGS)
+    devset = H5EmgDataset(dev=True, config=FLAGS)
+    testset = H5EmgDataset(test=True, config=FLAGS)
     logging.info("output example: %s", devset.example_indices[0])
     logging.info("train / dev split: %d %d", len(trainset), len(devset))
 
@@ -644,28 +601,19 @@ if __name__ == "__main__":
         help="Path to a checkpoint or safetensors file used to initialize training.",
     )
     parser.add_argument(
-        "--attention_type",
-        choices=("lrpe", "rope"),
-        default=None,
-        help="Attention positional encoding backend (overrides the config).",
-    )
-    parser.add_argument(
         "--model",
         choices=("tinymyo", "gaddy"),
         default=None,
+        required=True,
         help="Recognition architecture to train/evaluate (overrides the config).",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
+    if args.model is not None:
+        FLAGS.model = args.model
     if args.evaluate_saved is not None:
         FLAGS.evaluate_saved = args.evaluate_saved
-        if args.model is not None:
-            FLAGS.model = args.model
         evaluate_saved()
     else:
         if args.start_training_from is not None:
             FLAGS.start_training_from = args.start_training_from
-        if args.attention_type is not None:
-            FLAGS.attention_type = args.attention_type
-        if args.model is not None:
-            FLAGS.model = args.model
         main()

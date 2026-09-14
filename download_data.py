@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from data_utils import load_config
 
-CONFIG = load_config(os.path.join("config", "transduction_model.json"))
+CONFIG = load_config(os.path.join("config", "transduction.yaml"))
 
 # Resolve Zenodo's UUID-backed file URL from the record API. This avoids the
 # record UI file route, which may return 403 to scripted clients.

@@ -11,7 +11,7 @@ from joblib import Parallel, delayed
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from data_utils import load_config
 
-CONFIG = load_config(os.path.join("config", "transduction_model.json"))
+CONFIG = load_config(os.path.join("config", "transduction.yaml"))
 SILENT_DIRS = [os.path.expandvars(d) for d in CONFIG.silent_data_directories]
 VOICED_DIRS = [os.path.expandvars(d) for d in CONFIG.voiced_data_directories]
 

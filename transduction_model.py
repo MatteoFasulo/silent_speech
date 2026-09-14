@@ -21,18 +21,22 @@ from speechbrain.inference.ASR import EncoderASR
 
 from architecture import EMGTransformer
 from data_utils import (
+    apply_cli_overrides,
     combine_fixed_length,
     decollate_tensor,
     get_writer,
     load_config,
+    make_torch_generator,
     phoneme_inventory,
     print_confusion,
+    seed_everything,
+    seed_worker,
 )
 from hdf5_dataset import H5EmgDataset, SizeAwareSampler
 from vocoder import Vocoder
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-FLAGS = load_config(os.path.join("config", "transduction_model.json"))
+FLAGS = apply_cli_overrides(load_config(os.path.join("config", "transduction.yaml")))
 writer = get_writer(FLAGS.log_directory, run_id)
 
 
@@ -382,8 +386,10 @@ def train_model(
         pin_memory=(device == "cuda"),
         collate_fn=devset.collate_raw,
         num_workers=FLAGS.num_workers,
-        batch_sampler=SizeAwareSampler(training_subset, 256_000),
+        batch_sampler=SizeAwareSampler(training_subset, 256_000, seed=int(FLAGS.seed)),
         persistent_workers=True,
+        worker_init_fn=seed_worker,
+        generator=make_torch_generator(int(FLAGS.seed)),
     )
 
     n_phones = len(phoneme_inventory)
@@ -470,7 +476,7 @@ def train_model(
             losses.append(loss.item())
             writer.add_scalar("train/loss_step", loss.item(), batch_idx)
             if FLAGS.wandb_logging:
-                wandb.log({"train/loss_step": loss.item()}, step=batch_idx)
+                wandb.log({"train/loss_step": loss.item()})
 
             loss.backward()
             optim.step()
@@ -540,6 +546,7 @@ def main() -> None:
     """
     Main entry point for training the EMG to audio transduction model.
     """
+    seed_everything(int(FLAGS.seed))
     os.makedirs(FLAGS.log_directory, exist_ok=True)
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     os.makedirs(FLAGS.ckpt_directory, exist_ok=True)
@@ -554,8 +561,8 @@ def main() -> None:
 
     logging.info(sys.argv)
 
-    trainset = H5EmgDataset(dev=False, test=False)
-    devset = H5EmgDataset(dev=True)
+    trainset = H5EmgDataset(dev=False, test=False, config=FLAGS)
+    devset = H5EmgDataset(dev=True, config=FLAGS)
     logging.info("output example: %s", devset.example_indices[0])
     logging.info("train / dev split: %d %d", len(trainset), len(devset))
 
@@ -583,9 +590,10 @@ if __name__ == "__main__":
         default=None,
         help="Optional output directory for evaluation. Defaults to FLAGS.output_directory.",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     if args.evaluate_saved is not None:
+        seed_everything(int(FLAGS.seed))
         # Override output directory if provided
         if args.output_dir is not None:
             FLAGS.output_directory = args.output_dir
@@ -600,10 +608,15 @@ if __name__ == "__main__":
             format="%(message)s",
         )
 
-        testset = H5EmgDataset(dev=FLAGS.dev, test=not FLAGS.dev)
+        testset = H5EmgDataset(dev=FLAGS.dev, test=not FLAGS.dev, config=FLAGS)
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        state_dict = torch.load(args.evaluate_saved, map_location=device, weights_only=False)["state_dict"]
+        checkpoint = torch.load(
+            args.evaluate_saved,
+            map_location=device,
+            weights_only=False,
+        )
+        state_dict = checkpoint.get("state_dict", checkpoint)
         # Clean state dict if it comes from a PL checkpoint or has "model." prefix
         state_dict = {k.replace("model.", "") if k.startswith("model.") else k: v for k, v in state_dict.items()}
 

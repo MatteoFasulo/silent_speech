@@ -1,7 +1,8 @@
 import json
 import os
+import random
 import string
-from types import SimpleNamespace
+import sys
 
 import jiwer
 import librosa
@@ -12,6 +13,7 @@ import torch
 from textgrids import TextGrid
 from torch.utils.tensorboard.writer import SummaryWriter
 from unidecode import unidecode
+from omegaconf import DictConfig, OmegaConf
 
 phoneme_inventory = [
     "aa",
@@ -63,6 +65,33 @@ phoneme_inventory = [
     "zh",
     "sil",
 ]
+
+
+def seed_everything(seed: int) -> None:
+    """Seed the RNGs used by model initialization, augmentation, and loading."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def seed_worker(worker_id: int) -> None:
+    """Seed Python and NumPy from the per-worker seed assigned by PyTorch."""
+    del worker_id
+    worker_seed = torch.initial_seed() % (2**32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
+def make_torch_generator(seed: int) -> torch.Generator:
+    """Create a reproducibly seeded generator for a DataLoader."""
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
 
 
 def normalize_volume(audio: np.ndarray) -> np.ndarray:
@@ -501,11 +530,52 @@ class TextTransform(object):
 def load_config(
     config_path: str,
     encoding: str = "utf-8",
-) -> SimpleNamespace:
-    """Load a JSON configuration file and return it as a dictionary."""
-    with open(config_path, "r", encoding=encoding) as f:
-        config = json.load(f)
-    return SimpleNamespace(**config)
+) -> DictConfig:
+    """Load an OmegaConf YAML/JSON config, optionally merging a base config."""
+    config = OmegaConf.load(config_path)
+    base_path = config.pop("base_config", None)
+    if base_path is not None:
+        base_path = os.path.join(os.path.dirname(config_path), str(base_path))
+        config = OmegaConf.merge(OmegaConf.load(base_path), config)
+    return config
+
+
+def apply_cli_overrides(config: DictConfig, args=None) -> DictConfig:
+    """Merge command-line overrides into a loaded OmegaConf configuration.
+
+    Supports both ``--key=value`` and ``--key value``. Boolean options may be
+    passed without a value, e.g. ``--verbose`` or ``--debug``.
+    """
+    tokens = list(sys.argv[1:] if args is None else args)
+    overrides = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if not token.startswith("--"):
+            i += 1
+            continue
+
+        item = token[2:]
+        if "=" in item:
+            key, value = item.split("=", 1)
+        else:
+            key = item
+            next_token = tokens[i + 1] if i + 1 < len(tokens) else None
+            current = OmegaConf.select(config, key)
+            if next_token is None or next_token.startswith("--"):
+                if isinstance(current, bool) or current is None:
+                    value = "true"
+                else:
+                    raise ValueError(f"Missing value for command-line option --{key}")
+            else:
+                value = next_token
+                i += 1
+        overrides.append(f"{key}={value}")
+        i += 1
+
+    if not overrides:
+        return config
+    return OmegaConf.merge(config, OmegaConf.from_dotlist(overrides))
 
 
 def get_writer(

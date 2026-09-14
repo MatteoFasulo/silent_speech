@@ -11,12 +11,6 @@ from torch.utils.data import Dataset
 
 from data_utils import TextTransform, load_config
 
-FLAGS = load_config(os.path.join("config", "transduction_model.json"))
-H5_PATH = os.path.expandvars(FLAGS.h5_path)
-SILENT_DIRS = [os.path.expandvars(d) for d in FLAGS.silent_data_directories]
-VOICED_DIRS = [os.path.expandvars(d) for d in FLAGS.voiced_data_directories]
-
-
 class EMGDirectory(object):
     def __init__(self, session_index: int, directory: str, silent: bool, exclude_from_testset: bool = False):
         self.session_index = session_index
@@ -33,32 +27,39 @@ class EMGDirectory(object):
 
 
 class H5EmgDataset(Dataset):
-    def __init__(self, dev: bool = False, test: bool = False, no_normalizers: bool = False):
+    def __init__(self, dev: bool = False, test: bool = False, no_normalizers: bool = False, config=None):
         super().__init__()
         self.no_normalizers = no_normalizers
+        self.config = config if config is not None else load_config(os.path.join("config", "data.yaml"))
+        self.h5_path = os.path.expandvars(str(self.config.h5_path))
+        self.silent_dirs = [os.path.expandvars(str(d)) for d in self.config.silent_data_directories]
+        self.voiced_dirs = [os.path.expandvars(str(d)) for d in self.config.voiced_data_directories]
+        self.testset_file = os.path.expandvars(str(self.config.testset_file))
+        self.normalizers_file = os.path.expandvars(str(self.config.normalizers_file))
+        self.seed = int(getattr(self.config, "seed", 0))
 
         # load test/dev lists
-        with open(FLAGS.testset_file, "r", encoding="utf-8") as f:
+        with open(self.testset_file, "r", encoding="utf-8") as f:
             split = json.load(f)
         dev_set = {tuple(x) for x in split["dev"]}
         test_set = {tuple(x) for x in split["test"]}
 
         # build directories list
         dirs = []
-        with h5py.File(H5_PATH, "r") as h5:
+        with h5py.File(self.h5_path, "r") as h5:
             # silent sessions
             if "silent" in h5:
-                for sd in SILENT_DIRS:
+                for sd in self.silent_dirs:
                     for sess in h5["silent"]:
                         dirs.append(EMGDirectory(len(dirs), os.path.join(sd, sess), True))
 
-            has_silent = len(SILENT_DIRS) > 0 and "silent" in h5 and len(h5["silent"]) > 0
+            has_silent = len(self.silent_dirs) > 0 and "silent" in h5 and len(h5["silent"]) > 0
 
             # voiced sessions
             if "voiced" in h5:
                 # Create a map from session name to full path
                 voiced_session_paths = {}
-                for vd in VOICED_DIRS:
+                for vd in self.voiced_dirs:
                     if os.path.exists(vd):
                         for sess in os.listdir(vd):
                             if os.path.isdir(os.path.join(vd, sess)):
@@ -77,7 +78,7 @@ class H5EmgDataset(Dataset):
 
         # example_indices logic
         example_indices = []
-        with h5py.File(H5_PATH, "r") as h5:
+        with h5py.File(self.h5_path, "r") as h5:
             for d in dirs:
                 mode = "silent" if d.silent else "voiced"
                 if mode not in h5:
@@ -110,16 +111,16 @@ class H5EmgDataset(Dataset):
 
         # preserve ordering and shuffle
         example_indices.sort()
-        random.shuffle(example_indices)
+        random.Random(self.seed).shuffle(example_indices)
 
         self.example_indices = example_indices
         self.text_transform = TextTransform()
 
         # Load normalizers only if not disabled
         if not self.no_normalizers:
-            self.mfcc_norm, self.emg_norm = pickle.load(open(FLAGS.normalizers_file, "rb"))
+            self.mfcc_norm, self.emg_norm = pickle.load(open(self.normalizers_file, "rb"))
 
-        with h5py.File(H5_PATH, "r") as h5:
+        with h5py.File(self.h5_path, "r") as h5:
             d, utt = self.example_indices[0]
             mode = "silent" if d.silent else "voiced"
             grp = h5[mode][d.name][utt]
@@ -140,7 +141,7 @@ class H5EmgDataset(Dataset):
 
     def __getitem__(self, i: int) -> dict:
         if self._h5 is None:
-            self._h5 = h5py.File(H5_PATH, "r", swmr=True)
+            self._h5 = h5py.File(self.h5_path, "r", swmr=True)
 
         d, utt = self.example_indices[i]
         grp = self._h5["silent" if d.silent else "voiced"][d.name][utt]
@@ -238,18 +239,19 @@ class H5EmgDataset(Dataset):
 
 
 class SizeAwareSampler(torch.utils.data.Sampler):
-    def __init__(self, emg_dataset: "H5EmgDataset", max_len: int):
+    def __init__(self, emg_dataset: "H5EmgDataset", max_len: int, seed: int = 0):
         self.dataset = emg_dataset
         self.max_len = max_len
+        self._rng = random.Random(seed)
         # ensure HDF5 is open
         if self.dataset._h5 is None:
             # open in read‑only SWMR mode
-            self.dataset._h5 = h5py.File(H5_PATH, "r", swmr=True)
+            self.dataset._h5 = h5py.File(self.dataset.h5_path, "r", swmr=True)
         self.batches = self._create_batches()
 
     def _create_batches(self):
         batches, batch, batch_len = [], [], 0
-        for idx in random.sample(range(len(self.dataset)), len(self.dataset)):
+        for idx in self._rng.sample(range(len(self.dataset)), len(self.dataset)):
             # grab the length from HDF5
             d, utt = self.dataset.example_indices[idx]
             mode = "silent" if d.silent else "voiced"
@@ -269,7 +271,7 @@ class SizeAwareSampler(torch.utils.data.Sampler):
         return batches
 
     def __iter__(self):
-        random.shuffle(self.batches)
+        self._rng.shuffle(self.batches)
         yield from self.batches
 
     def __len__(self):

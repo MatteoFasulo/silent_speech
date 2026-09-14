@@ -15,7 +15,7 @@ from data_utils import (
     read_phonemes,
 )
 
-CONFIG = load_config(os.path.join("config", "transduction_model.json"))
+CONFIG = load_config(os.path.join("config", "transduction.yaml"))
 TEXT_ALIGN_DIR = CONFIG.text_align_directory
 OUT_FILE = os.path.expandvars(CONFIG.h5_path)
 SILENT_DIRS = [os.path.expandvars(d) for d in CONFIG.silent_data_directories]

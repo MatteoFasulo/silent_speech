@@ -1,0 +1,30 @@
+base_config: data.yaml
+
+output_directory: ./models/transduction_model/
+ckpt_directory: output
+log_directory: logs
+hifigan_checkpoint: ./hifigan_finetuned/checkpoint
+full_seq_len: 1600
+seq_len: 200
+embed_dim: 192
+in_chans: 8
+num_heads: 3
+num_layers: 4
+mlp_ratio: 4.0
+dropout: 0.1
+downsample_factor: 8
+dev: false
+batch_size: 32
+num_epochs: 80
+learning_rate: 1.0e-3
+learning_rate_patience: 5
+learning_rate_warmup: 500
+data_size_fraction: 1.0
+phoneme_loss_weight: 0.5
+start_training_from:
+weight_decay: 1.0e-7
+num_workers: 8
+freeze_blocks: false
+wandb_logging: false
+seed: 42
+task: emg2audio

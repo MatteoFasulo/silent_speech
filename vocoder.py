@@ -17,7 +17,7 @@ from env import AttrDict
 
 from models import Generator
 
-FLAGS = load_config(os.path.join("config", "transduction_model.json"))
+FLAGS = load_config(os.path.join("config", "transduction.yaml"))
 
 
 def download_and_extract_pretrained(url: str, dest_dir: str) -> None:
