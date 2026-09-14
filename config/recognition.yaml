@@ -1,0 +1,37 @@
+base_config: data.yaml
+
+output_directory: ./models/recognition_model/
+ckpt_directory: $CKPT_DIR
+log_directory: logs
+lm_directory: KenLM
+full_seq_len: 1600
+seq_len: 200
+embed_dim: 192
+in_chans: 8
+num_heads: 3
+num_layers: 8
+mlp_ratio: 4.0
+dropout: 0.1
+downsample_factor: 8
+dev: false
+debug: false
+batch_size: 32
+num_epochs: 200
+learning_rate: 5.0e-4
+learning_rate_milestones: [125, 150, 175]
+learning_rate_gamma: 0.5
+learning_rate_warmup: 1000
+weight_decay: 0.0
+start_training_from:
+evaluate_saved:
+eval_interval: 5
+num_workers: 8
+freeze_blocks: false
+wandb_logging: true
+verbose: false
+seed: 42
+task: emg2text
+model: tinymyo
+gaddy_model_size: 768
+gaddy_num_layers: 6
+gaddy_dropout: 0.2

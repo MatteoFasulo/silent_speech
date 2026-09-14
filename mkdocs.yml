@@ -1,0 +1,95 @@
+site_name: Documentation
+repo_url: https://github.com/MatteoFasulo/silent_speech
+site_description: Documentation for the project
+site_dir: site
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MatteoFasulo/silent_speech
+  generator: false
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          load_external_modules: true
+          paths: ["."]
+          options:
+            docstring_style: google
+            docstring_section_style: list
+            merge_init_into_class: true
+            show_signature: false
+            show_if_no_docstring: false
+            docstring_options:
+              ignore_init_summary: true
+              trim_doctest_flags: true
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - search.share
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - navigation.footer
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - Silent Speech Synthesis: emg2audio/index.md
+  - Silent Speech Recognition: emg2text/index.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 2
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
